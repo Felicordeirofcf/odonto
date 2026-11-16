@@ -286,7 +286,7 @@ export default function SmileAnalyzer() {
     };
   }, [result, current, whitening]);
 
-  const aiKey = simTab === "orto" ? "orto" : `estetico|${lensCode}|${lensStyle}`;
+  const aiKey = simTab === "orto" ? `orto|${aiQuality}` : `estetico|${lensCode}|${lensStyle}|${aiQuality}`;
   const isAI = simTab !== "clareamento";
   /** Imagem "depois" da simulação selecionada (null = IA ainda não gerada). */
   const after: SimImages | null = !sims ? null : isAI ? (aiCache[aiKey] ?? null) : sims.clareamento;
@@ -352,8 +352,8 @@ export default function SmileAnalyzer() {
             { key: "Atual", code: current?.code ?? "", zoom: sims.atual.zoom },
             { key: "Clareamento", code: whitening?.code ?? "", zoom: sims.clareamento.zoom },
             ...Object.entries(aiCache).map(([k, v]) => ({
-              key: k === "orto" ? "Ortodôntico" : "Lentes",
-              code: k.split("|")[1] ?? "",
+              key: k.startsWith("orto") ? "Ortodôntico" : "Lentes",
+              code: k.startsWith("orto") ? "" : (k.split("|")[1] ?? ""),
               zoom: v.zoom,
             })),
           ]
