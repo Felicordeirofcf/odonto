@@ -1,0 +1,44 @@
+# Evolution API (WhatsApp) + HTTPS automático, para rodar no seu VPS.
+# Uso: veja deploy/evolution/README.md
+services:
+  evolution:
+    image: evoapicloud/evolution-api:v2.3.7
+    restart: always
+    env_file: .env
+    depends_on: [postgres, redis]
+    volumes:
+      - evolution_instances:/evolution/instances
+    expose: ["8080"]
+
+  postgres:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_DB: evolution
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+  # Proxy com certificado HTTPS gratuito (Let's Encrypt) para o seu domínio
+  caddy:
+    image: caddy:2
+    restart: always
+    ports: ["80:80", "443:443"]
+    command: caddy reverse-proxy --from ${EVOLUTION_DOMAIN} --to evolution:8080
+    volumes:
+      - caddy_data:/data
+    depends_on: [evolution]
+
+volumes:
+  evolution_instances:
+  postgres_data:
+  redis_data:
+  caddy_data:

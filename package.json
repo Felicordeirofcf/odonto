@@ -10,6 +10,7 @@
     "postinstall": "node scripts/copy-mediapipe.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.9.0",
     "@google/genai": "^3.3.0",
     "@mediapipe/tasks-vision": "^1.2.3",
     "lucide-react": "^1.73.0",
