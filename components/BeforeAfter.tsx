@@ -4,10 +4,24 @@ import { useState } from "react";
 import { ChevronsLeftRight } from "lucide-react";
 
 /** Comparação antes/depois: arraste a linha para revelar. */
-export default function BeforeAfter({ before, after, label }: { before: string; after: string; label: string }) {
+export default function BeforeAfter({
+  before,
+  after,
+  label,
+  aspect = 1,
+}: {
+  before: string;
+  after: string;
+  label: string;
+  /** largura / altura da imagem */
+  aspect?: number;
+}) {
   const [pos, setPos] = useState(50);
   return (
-    <div className="relative mt-3 aspect-square w-full select-none overflow-hidden rounded-xl border bg-gray-100">
+    <div
+      className="relative mx-auto mt-3 w-full select-none overflow-hidden rounded-2xl border-2 border-brand-500 bg-gray-100"
+      style={{ aspectRatio: aspect, maxWidth: `calc(75vh * ${aspect})` }}
+    >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={after} alt={label} draggable={false} className="absolute inset-0 h-full w-full object-cover" />
       {/* eslint-disable-next-line @next/next/no-img-element */}

@@ -29,17 +29,34 @@ import {
 } from "@/lib/analyze";
 import { labToCss, type RGB } from "@/lib/color";
 import { LensAIError, generateLensAI, type LensAIResult, type LensStyle } from "@/lib/lens-ai";
+import type { SimImages } from "@/lib/analyze";
 import BeforeAfter from "@/components/BeforeAfter";
 import { ALL_SHADES_BY_VALUE, BLEACH_SHADES, SHADE_GROUPS, VITA_SHADES, findShade, naturalWhiteningTarget, type Shade } from "@/lib/shades";
 
-type SimKey = "atual" | "clareamento" | "lente";
-const SIM_LABELS: Record<SimKey, string> = {
-  atual: "Sem lente (atual)",
-  clareamento: "Clareamento natural",
-  lente: "Com lente",
-};
+type SimKey = "clareamento" | "orto" | "estetico";
+const MODES: { key: SimKey; label: string; desc: string; ai: boolean }[] = [
+  {
+    key: "clareamento",
+    label: "Clareamento",
+    desc: "O mesmo sorriso, mais claro. Não muda o formato nem a posição dos dentes.",
+    ai: false,
+  },
+  {
+    key: "orto",
+    label: "Ortodôntico",
+    desc: "Simula os dentes alinhados (aparelho ou alinhador), mantendo a cor atual.",
+    ai: true,
+  },
+  {
+    key: "estetico",
+    label: "Estético · Lentes",
+    desc: "Melhora formato, cor e posição, e repõe dentes ausentes. Transformação completa.",
+    ai: true,
+  },
+];
+const modeLabel = (k: SimKey) => MODES.find((m) => m.key === k)!.label;
 const LENS_OPTIONS = ["BL1", "BL2", "BL3", "BL4", "B1"];
-const WHITENING_OPTIONS = VITA_SHADES.slice(0, 6).map((s) => s.code); // B1..C1
+const WHITENING_OPTIONS = ["BL2", "BL3", "BL4", ...VITA_SHADES.slice(0, 5).map((s) => s.code)]; // BL2..A2
 
 const MAX_SIDE = 2048;
 const HISTORY_KEY = "odonto.sorriso.historico";
@@ -52,7 +69,7 @@ type Saved = {
   date: string;
   crop: string;
   shades: { code: string; confidence: number }[];
-  sims?: { key: SimKey; code: string; zoom: string }[];
+  sims?: { key: string; code: string; zoom: string }[];
   lab: { L: number; a: number; b: number };
 };
 
@@ -81,7 +98,7 @@ export default function SmileAnalyzer() {
   const [showSettings, setShowSettings] = useState(false);
   const [history, setHistory] = useState<Saved[]>([]);
   const [savedId, setSavedId] = useState<string | null>(null);
-  const [simTab, setSimTab] = useState<SimKey>("lente");
+  const [simTab, setSimTab] = useState<SimKey>("clareamento");
   const [whiteningCode, setWhiteningCode] = useState<string | null>(null);
   const [lensCode, setLensCode] = useState("BL2");
   const [lensStyle, setLensStyle] = useState<LensStyle>("natural");
@@ -89,7 +106,7 @@ export default function SmileAnalyzer() {
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [consent, setConsent] = useState(false);
-  const [lensView, setLensView] = useState<"ia" | "cor">("ia");
+  const [faceView, setFaceView] = useState<"rosto" | "sorriso">("rosto");
   const [accessCode, setAccessCode] = useState("");
   const [viewportH, setViewportH] = useState<number | null>(null);
 
@@ -182,7 +199,7 @@ export default function SmileAnalyzer() {
     setCalibrating(false);
     setSavedId(null);
     setWhiteningCode(null);
-    setSimTab("lente");
+    setSimTab("clareamento");
     setAiCache({});
     setAiError(null);
     setConsent(false);
@@ -260,32 +277,37 @@ export default function SmileAnalyzer() {
   const sims = useMemo(() => {
     if (!result || !current || !whitening) return null;
     const shift = (t: Shade) => ({ L: t.lab.L - current.lab.L, a: t.lab.a - current.lab.a, b: t.lab.b - current.lab.b });
-    const atual = renderSimulation(result.sim, { shift: { L: 0, a: 0, b: 0 }, uniformity: 0 });
     return {
-      atual: { ...atual, code: current.code },
-      clareamento: { ...renderSimulation(result.sim, { shift: shift(whitening), uniformity: 0.15 }), code: whitening.code },
-      lente: { ...renderSimulation(result.sim, { shift: shift(lens), uniformity: 0.6 }), code: lens.code },
+      atual: renderSimulation(result.sim, { shift: { L: 0, a: 0, b: 0 }, uniformity: 0 }),
+      clareamento: renderSimulation(result.sim, { shift: shift(whitening), uniformity: 0.15 }),
     };
-  }, [result, current, whitening, lens]);
+  }, [result, current, whitening]);
 
-  const aiKey = `${lensCode}|${lensStyle}`;
-  const aiCurrent = aiCache[aiKey] ?? null;
-  const shown = sims && {
-    ...sims,
-    lente: aiCurrent && lensView === "ia" ? { ...aiCurrent, code: lensCode } : sims.lente,
-  };
+  const aiKey = simTab === "orto" ? "orto" : `estetico|${lensCode}|${lensStyle}`;
+  const isAI = simTab !== "clareamento";
+  /** Imagem "depois" da simulação selecionada (null = IA ainda não gerada). */
+  const after: SimImages | null = !sims ? null : isAI ? (aiCache[aiKey] ?? null) : sims.clareamento;
+  const afterLabel =
+    simTab === "clareamento"
+      ? `Clareamento · ${whitening?.code ?? ""}`
+      : simTab === "orto"
+        ? "Ortodôntico"
+        : `Lentes · ${lensCode}`;
 
   const generateAI = async () => {
     if (!result) return;
     setAiBusy(true);
     setAiError(null);
     try {
-      const r = await generateLensAI(result.sim, lensCode, lensStyle, accessCode);
+      const r = await generateLensAI(
+        result.sim,
+        { mode: simTab === "orto" ? "ortho" : "cosmetic", shade: lensCode, style: lensStyle },
+        accessCode,
+      );
       setAiCache((c) => ({ ...c, [aiKey]: r }));
-      setLensView("ia");
       setSavedId(null);
     } catch (e) {
-      setAiError(e instanceof LensAIError ? e.message : "Falha ao gerar a lente com IA.");
+      setAiError(e instanceof LensAIError ? e.message : "Falha ao gerar a simulação com IA.");
       console.error(e);
     } finally {
       setAiBusy(false);
@@ -302,7 +324,15 @@ export default function SmileAnalyzer() {
       shades: result.matches.map((m) => ({ code: m.shade.code, confidence: m.confidence })),
       lab: result.measured,
       sims: sims
-        ? (Object.keys(SIM_LABELS) as SimKey[]).map((k) => ({ key: k, code: shown![k].code, zoom: shown![k].zoom }))
+        ? [
+            { key: "Atual", code: current?.code ?? "", zoom: sims.atual.zoom },
+            { key: "Clareamento", code: whitening?.code ?? "", zoom: sims.clareamento.zoom },
+            ...Object.entries(aiCache).map(([k, v]) => ({
+              key: k === "orto" ? "Ortodôntico" : "Lentes",
+              code: k.split("|")[1] ?? "",
+              zoom: v.zoom,
+            })),
+          ]
         : undefined,
     };
     const next = [entry, ...history].slice(0, 20);
@@ -430,70 +460,58 @@ export default function SmileAnalyzer() {
       </section>
 
       {/* Simulação */}
-      {result && shown && (
+      {result && sims && (
         <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
-            <Sparkles className="size-5 text-brand-600" /> 2. Como ficaria o sorriso
+            <Sparkles className="size-5 text-brand-600" /> 2. Simulação do sorriso
           </h2>
 
-          <div className="mt-3 grid grid-cols-3 gap-1 rounded-xl bg-gray-100 p-1 text-sm font-medium">
-            {(Object.keys(SIM_LABELS) as SimKey[]).map((k) => (
+          {/* Tipo de simulação */}
+          <div className="mt-3 space-y-2">
+            {MODES.map((m) => (
               <button
-                key={k}
-                onClick={() => setSimTab(k)}
-                className={`rounded-lg px-2 py-2 leading-tight ${
-                  simTab === k ? "bg-white text-brand-700 shadow-sm" : "text-gray-500"
+                key={m.key}
+                onClick={() => {
+                  setSimTab(m.key);
+                  setAiError(null);
+                }}
+                className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left ${
+                  simTab === m.key ? "border-brand-500 bg-brand-50" : "border-gray-200"
                 }`}
               >
-                {SIM_LABELS[k]}
-                <span className="block text-xs font-semibold opacity-70">
-                  {shown[k].code}
-                  {k === "lente" && aiCurrent && lensView === "ia" ? " · IA" : ""}
-                </span>
-              </button>
-            ))}
-          </div>
-
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          {simTab === "atual" ? (
-            <img src={shown.atual.view} alt={SIM_LABELS.atual} className="mt-3 aspect-square w-full rounded-xl border object-cover" />
-          ) : (
-            <BeforeAfter
-              before={shown.atual.view}
-              after={shown[simTab].view}
-              label={`${SIM_LABELS[simTab]} · ${shown[simTab].code}`}
-            />
-          )}
-          {simTab !== "atual" && (
-            <p className="mt-1.5 text-center text-xs text-gray-400">Arraste a linha para comparar antes e depois</p>
-          )}
-
-          <div className="mt-3 grid grid-cols-3 items-start gap-2">
-            {(Object.keys(SIM_LABELS) as SimKey[]).map((k) => (
-              <button key={k} onClick={() => setSimTab(k)} className="text-center text-xs text-gray-500">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={shown[k].zoom}
-                  alt=""
-                  className={`w-full rounded-lg border-2 ${simTab === k ? "border-brand-500" : "border-transparent"}`}
+                <span
+                  className={`size-4 shrink-0 rounded-full border-2 ${
+                    simTab === m.key ? "border-brand-500 bg-brand-500 ring-2 ring-inset ring-white" : "border-gray-300"
+                  }`}
                 />
-                {SIM_LABELS[k]}
+                <span className="min-w-0 flex-1">
+                  <span className={`font-semibold ${simTab === m.key ? "text-brand-700" : "text-gray-800"}`}>
+                    {m.label}
+                  </span>
+                  <span className="block text-xs leading-snug text-gray-500">{m.desc}</span>
+                </span>
+                {m.ai && (
+                  <span className="shrink-0 rounded-md bg-violet-100 px-1.5 py-0.5 text-[11px] font-semibold text-violet-700">
+                    IA
+                  </span>
+                )}
               </button>
             ))}
           </div>
 
+          {/* Opções do tipo escolhido */}
           {simTab === "clareamento" && (
             <ShadePicker
               label="Cor final do clareamento"
               options={WHITENING_OPTIONS}
-              value={shown.clareamento.code}
+              value={whitening?.code ?? ""}
               onChange={setWhiteningCode}
             />
           )}
-          {simTab === "lente" && (
+          {simTab === "estetico" && (
             <>
               <div className="mt-3">
-                <div className="text-sm font-medium text-gray-600">Estilo da lente</div>
+                <div className="text-sm font-medium text-gray-600">Estilo</div>
                 <div className="mt-1.5 grid grid-cols-2 gap-2">
                   {(
                     [
@@ -514,65 +532,82 @@ export default function SmileAnalyzer() {
                   ))}
                 </div>
               </div>
-
               <ShadePicker label="Cor da lente" options={LENS_OPTIONS} value={lensCode} onChange={setLensCode} />
-
-              <div className="mt-4 rounded-xl border border-violet-200 bg-violet-50/60 p-3">
-                <div className="flex items-center gap-2 font-semibold text-violet-800">
-                  <Wand2 className="size-5" /> Lente realista com IA
-                </div>
-                {aiCurrent && (
-                    <span className="mt-2 inline-flex overflow-hidden rounded-lg border border-violet-200 text-sm font-medium">
-                      {(["ia", "cor"] as const).map((v) => (
-                        <button
-                          key={v}
-                          onClick={() => setLensView(v)}
-                          className={`px-3 py-1.5 ${lensView === v ? "bg-violet-600 text-white" : "bg-white text-violet-700"}`}
-                        >
-                          {v === "ia" ? "Com IA" : "Só cor"}
-                        </button>
-                      ))}
-                    </span>
-                )}
-                <p className="mt-1 text-xs text-violet-900/70">
-                  A IA redesenha os dentes com formato de lente (alinha, corrige e clareia). Só o recorte da boca é
-                  enviado; o resto do rosto continua igual.
-                </p>
-                {!aiCurrent && (
-                  <label className="mt-2 flex items-start gap-2 text-sm text-violet-900">
-                    <input
-                      type="checkbox"
-                      checked={consent}
-                      onChange={(e) => setConsent(e.target.checked)}
-                      className="mt-0.5 size-4 accent-violet-600"
-                    />
-                    O paciente autorizou o envio da foto para a simulação.
-                  </label>
-                )}
-                <button
-                  onClick={generateAI}
-                  disabled={aiBusy || (!aiCurrent && !consent)}
-                  className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-3 font-semibold text-white disabled:opacity-50"
-                >
-                  {aiBusy ? <LoaderCircle className="size-5 animate-spin" /> : <Wand2 className="size-5" />}
-                  {aiBusy
-                    ? "Gerando lente… (até 40 s)"
-                    : aiCurrent
-                      ? "Gerar outra versão"
-                      : `Gerar lente ${lensStyle === "hollywood" ? "Hollywood" : "natural"} ${lensCode} com IA`}
-                </button>
-                {aiError && <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p>}
-              </div>
             </>
           )}
 
-          {simTab !== "atual" && (
+          {/* Antes / depois */}
+          {after ? (
+            <>
+              <BeforeAfter
+                key={`${simTab}-${faceView}`}
+                before={faceView === "rosto" ? sims.atual.full : sims.atual.view}
+                after={faceView === "rosto" ? after.full : after.view}
+                label={afterLabel}
+                aspect={faceView === "rosto" && photo ? photo.width / photo.height : 1}
+              />
+              <p className="mt-1.5 text-center text-xs text-gray-400">Arraste a linha para comparar antes e depois</p>
+              <div className="mt-2 flex justify-center">
+                <span className="inline-flex overflow-hidden rounded-lg border border-gray-200 text-sm font-medium">
+                  {(["rosto", "sorriso"] as const).map((v) => (
+                    <button
+                      key={v}
+                      onClick={() => setFaceView(v)}
+                      className={`px-3 py-1.5 ${faceView === v ? "bg-brand-500 text-white" : "bg-white text-gray-600"}`}
+                    >
+                      {v === "rosto" ? "Rosto inteiro" : "Só o sorriso"}
+                    </button>
+                  ))}
+                </span>
+              </div>
+            </>
+          ) : (
+            // IA ainda não gerada para esta opção
+            <div className="relative mt-3 overflow-hidden rounded-2xl border-2 border-dashed border-violet-300">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={sims.atual.view} alt="Foto atual" className="aspect-square w-full object-cover opacity-60" />
+              <div className="absolute inset-0 flex items-center justify-center bg-white/40 p-4 text-center text-sm font-medium text-violet-900">
+                {aiBusy ? "Gerando simulação… pode levar até 40 s" : "Toque em “Gerar simulação” abaixo"}
+              </div>
+            </div>
+          )}
+
+          {isAI && (
+            <div className="mt-4 rounded-xl border border-violet-200 bg-violet-50/60 p-3">
+              <p className="text-xs text-violet-900/70">
+                A IA redesenha só os dentes. Apenas a parte de baixo do rosto é enviada; o restante da foto continua
+                igual.
+              </p>
+              {!after && (
+                <label className="mt-2 flex items-start gap-2 text-sm text-violet-900">
+                  <input
+                    type="checkbox"
+                    checked={consent}
+                    onChange={(e) => setConsent(e.target.checked)}
+                    className="mt-0.5 size-4 accent-violet-600"
+                  />
+                  O paciente autorizou o envio da foto para a simulação.
+                </label>
+              )}
+              <button
+                onClick={generateAI}
+                disabled={aiBusy || !consent}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-3 font-semibold text-white disabled:opacity-50"
+              >
+                {aiBusy ? <LoaderCircle className="size-5 animate-spin" /> : <Wand2 className="size-5" />}
+                {aiBusy ? "Gerando…" : after ? "Gerar outra versão" : "Gerar simulação"}
+              </button>
+              {aiError && <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p>}
+            </div>
+          )}
+
+          {after && (
             <button
               onClick={() =>
                 shareBeforeAfter(
-                  shown.atual.view,
-                  shown[simTab].view,
-                  `${SIM_LABELS[simTab]} · ${shown[simTab].code}`,
+                  faceView === "rosto" ? sims.atual.full : sims.atual.view,
+                  faceView === "rosto" ? after.full : after.view,
+                  afterLabel,
                   patient.trim(),
                 )
               }
@@ -582,14 +617,8 @@ export default function SmileAnalyzer() {
             </button>
           )}
 
-          <details className="mt-3 text-sm text-gray-600">
-            <summary className="cursor-pointer">Ver foto inteira</summary>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={shown[simTab].full} alt="" className="mt-2 w-full rounded-xl border" />
-          </details>
-
           <p className="mt-3 text-xs text-gray-400">
-            Simulação ilustrativa da cor. O resultado real depende da avaliação clínica.
+            Simulação ilustrativa. O resultado real depende da avaliação clínica.
           </p>
         </section>
       )}
@@ -742,7 +771,7 @@ export default function SmileAnalyzer() {
             {history.map((h) => (
               <li key={h.id} className="flex items-center gap-3 py-3">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={h.sims?.[2]?.zoom ?? h.crop} alt="" className="h-12 w-16 rounded-lg object-cover" />
+                <img src={h.sims?.[h.sims.length - 1]?.zoom ?? h.crop} alt="" className="h-12 w-16 rounded-lg object-cover" />
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-medium">{h.patient}</div>
                   <div className="text-xs text-gray-500">
@@ -874,24 +903,25 @@ async function shareBeforeAfter(before: string, after: string, label: string, pa
       i.src = src;
     });
   const [a, b] = await Promise.all([load(before), load(after)]);
-  const S = Math.min(1080, a.naturalWidth);
-  const gap = Math.round(S * 0.02);
-  const bar = Math.round(S * 0.11);
+  const W = Math.min(1080, a.naturalWidth);
+  const H = Math.round((W * a.naturalHeight) / a.naturalWidth);
+  const gap = Math.round(W * 0.02);
+  const bar = Math.round(W * 0.11);
   const c = document.createElement("canvas");
-  c.width = S * 2 + gap;
-  c.height = S + bar;
+  c.width = W * 2 + gap;
+  c.height = H + bar;
   const x = c.getContext("2d")!;
   x.fillStyle = "#ffffff";
   x.fillRect(0, 0, c.width, c.height);
-  x.drawImage(a, 0, 0, S, S);
-  x.drawImage(b, S + gap, 0, S, S);
+  x.drawImage(a, 0, 0, W, H);
+  x.drawImage(b, W + gap, 0, W, H);
   x.fillStyle = "#1f2328";
   x.font = `600 ${Math.round(bar * 0.4)}px system-ui, sans-serif`;
   x.textAlign = "center";
   x.textBaseline = "middle";
-  x.fillText("Antes", S / 2, S + bar / 2);
+  x.fillText("Antes", W / 2, H + bar / 2);
   x.fillStyle = "#0f8275";
-  x.fillText(label, S + gap + S / 2, S + bar / 2);
+  x.fillText(label, W + gap + W / 2, H + bar / 2);
 
   const blob = await new Promise<Blob | null>((r) => c.toBlob(r, "image/jpeg", 0.92));
   if (!blob) return;

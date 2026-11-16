@@ -5,11 +5,13 @@ Primeiro módulo do CRM odontológico. A pessoa tira uma foto (câmera ao vivo) 
 1. **Encontra a boca** com IA (MediaPipe Face Landmarker, roda no próprio aparelho — a foto não sai do celular).
 2. **Isola os dentes** (descarta lábios, gengiva, língua e sombras).
 3. **Identifica a cor atual** — as 3 cores mais próximas da escala VITA, com % de confiança.
-4. **Simula 3 versões do sorriso**:
-   - **Sem lente (atual)**
-   - **Clareamento natural** (sobe ~5 tons na escala, mantendo a textura natural; tom final ajustável)
-   - **Com lente** (cores BL1–BL4/B1, estilo Natural ou Hollywood)
-5. **Lente realista com IA generativa** (Google Gemini — Nano Banana Pro, com Nano Banana 2 como reserva): redesenha os dentes com formato de lente (alinha, corrige, clareia). Só o recorte da boca é enviado, e o resultado é colado de volta apenas na região dos dentes — o resto do rosto fica idêntico. Exige marcar a autorização do paciente.
+4. **Simula o sorriso em 3 modos**, com comparação antes/depois deslizante no rosto inteiro (ou só no sorriso):
+   - **Clareamento** — o mesmo sorriso, mais claro (instantâneo, sem enviar a foto; tom final ajustável).
+   - **Ortodôntico** (IA generativa) — dentes alinhados, mantendo a cor atual.
+   - **Estético · Lentes** (IA generativa) — formato, cor e posição; repõe dentes ausentes. Estilo Natural ou Hollywood, cores BL1–BL4/B1.
+5. **Baixar / enviar antes e depois** (abre o compartilhamento do celular, ex.: WhatsApp).
+
+Nos modos com IA (Google Gemini), só a parte de baixo do rosto é enviada; o resultado é alinhado, tem a cor igualada e é colado de volta apenas na região da boca. Exige marcar a autorização do paciente.
 
 ## Configurar a IA generativa (lente)
 

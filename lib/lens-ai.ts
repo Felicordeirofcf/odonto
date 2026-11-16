@@ -116,10 +116,11 @@ function registration(sim: SimulationData, gen: HTMLImageElement) {
   return { dx: (best.dx / N) * sq.w, dy: (best.dy / N) * sq.w, gain };
 }
 
+export type AIMode = "ortho" | "cosmetic";
+
 export async function generateLensAI(
   sim: SimulationData,
-  shadeCode: string,
-  style: LensStyle,
+  opts: { mode: AIMode; shade: string; style: LensStyle },
   accessCode: string,
 ): Promise<LensAIResult> {
   const sq = viewRect(sim);
@@ -134,7 +135,7 @@ export async function generateLensAI(
     res = await fetch("/api/lente", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(accessCode ? { "x-access-code": accessCode } : {}) },
-      body: JSON.stringify({ image, shade: shadeCode, style }),
+      body: JSON.stringify({ image, ...opts }),
     });
   } catch {
     throw new LensAIError("Sem conexão com o servidor. Verifique a internet.");

@@ -33,25 +33,43 @@ const STYLES: Record<string, string> = {
 
 const MAX_BYTES = 6 * 1024 * 1024;
 
-function buildPrompt(shade: string, style: string) {
+const REALISM = [
+  "REALISM (most important):",
+  "- It must look like an unedited photograph of real teeth, never like a render, sticker or whitening filter.",
+  "- Real enamel: subtle translucency at the incisal edges, slightly warmer tone near the gum line, fine surface texture, soft natural specular highlights consistent with the light direction in the photo.",
+  "- Visible individual teeth with natural interproximal shadows and embrasures; never a single flat white strip. Back teeth fade naturally into the shadow of the cheeks.",
+  "- Match the photo's sharpness, noise/grain, depth of field and white balance exactly.",
+  "- Gums stay healthy pink with natural gingival margins around each tooth.",
+  "",
+  "DO NOT CHANGE anything else: lips (shape, color, texture, position), mouth opening, tongue, skin, pores, wrinkles, facial hair, nose, chin, background, lighting, framing. Do not zoom, crop, rotate, shift or re-frame — every pixel outside the teeth must stay aligned with the original.",
+  "No text, watermark, border or split view. Output only the edited photograph.",
+];
+
+const INTRO =
+  "You are a dental smile simulator used by a dentist to show a patient a realistic preview. The image is a real close-up photograph of the lower half of a patient's face, smiling.";
+
+function buildPrompt(mode: string, shade: string, style: string) {
+  if (mode === "ortho")
+    return [
+      INTRO,
+      "",
+      "TASK: simulate the result of ORTHODONTIC treatment (braces / clear aligners). Edit ONLY the visible teeth.",
+      "Move the teeth into ideal alignment: straighten crooked and rotated teeth, resolve crowding and overlaps, close gaps (diastemas), level the incisal edges into a harmonious smile arc and center the midline.",
+      "PRESERVE each tooth's own identity: the same shade and color (do NOT whiten — keep existing staining and yellowness exactly), the same size, natural shape, wear and surface texture, and the same number of teeth. Only their position and angulation change.",
+      "",
+      ...REALISM,
+    ].join("\n");
+
   return [
-    "You are a cosmetic-dentistry smile-design simulator used by a dentist to show a patient a realistic preview. The image is a real close-up photograph of the lower half of a patient's face, smiling.",
+    INTRO,
     "",
-    "TASK: edit ONLY the visible teeth so they look as they would after porcelain veneers (dental contact lenses) placed by an excellent cosmetic dentist.",
+    "TASK: simulate a COSMETIC smile makeover with porcelain veneers (dental contact lenses) placed by an excellent cosmetic dentist. Edit ONLY the teeth.",
     STYLES[style],
     `Target shade: ${SHADES[shade]}.`,
-    "Correct crooked, rotated, chipped, worn, short or stained teeth and close small gaps. Keep the same number of visible teeth, the same dental arch, the same midline and the same smile width. Each tooth must stay where it is — improve its shape, do not move the smile.",
+    "Improve shape, color and position: correct crooked, rotated, chipped, worn, short or stained teeth, close gaps, and REPLACE any missing teeth with natural-looking ones. Keep the same dental arch, midline and smile width — improve the teeth, do not move the smile.",
+    "White but not glowing: brightness must be plausible for the photo's exposure. No bloom, no blown-out pure white.",
     "",
-    "REALISM (most important):",
-    "- It must look like an unedited photograph of real teeth, never like a render, sticker or whitening filter.",
-    "- Real enamel: subtle translucency at the incisal edges, slightly warmer tone near the gum line, fine surface texture, soft natural specular highlights consistent with the light direction in the photo.",
-    "- Visible individual teeth with natural interproximal shadows and embrasures; never a single flat white strip. Back teeth fade naturally into the shadow of the cheeks.",
-    "- White but not glowing: brightness must be plausible for the photo's exposure. No bloom, no blown-out pure white.",
-    "- Match the photo's sharpness, noise/grain, depth of field and white balance exactly.",
-    "- Gums stay the same shape and position, healthy pink, with natural gingival margins around each tooth.",
-    "",
-    "DO NOT CHANGE anything else: lips (shape, color, texture, position), mouth opening, tongue, skin, pores, wrinkles, facial hair, nose, chin, background, lighting, framing. Do not zoom, crop, rotate, shift or re-frame — every pixel outside the teeth must stay aligned with the original.",
-    "No text, watermark, border or split view. Output only the edited photograph.",
+    ...REALISM,
   ].join("\n");
 }
 
@@ -78,7 +96,7 @@ export async function POST(req: Request) {
   if (access && req.headers.get("x-access-code") !== access)
     return json({ error: "Código de acesso inválido. Informe o código em “Ajustes da IA”." }, 401);
 
-  let body: { image?: string; shade?: string; style?: string };
+  let body: { image?: string; shade?: string; style?: string; mode?: string };
   try {
     body = await req.json();
   } catch {
@@ -87,6 +105,7 @@ export async function POST(req: Request) {
 
   const shade = body.shade && SHADES[body.shade] ? body.shade : "BL2";
   const style = body.style && STYLES[body.style] ? body.style : "natural";
+  const mode = body.mode === "ortho" ? "ortho" : "cosmetic";
   const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(body.image ?? "");
   if (!match) return json({ error: "Imagem inválida." }, 400);
   const [, mimeType, data] = match;
@@ -98,7 +117,7 @@ export async function POST(req: Request) {
     .filter(Boolean);
 
   const ai = new GoogleGenAI({ apiKey });
-  const prompt = buildPrompt(shade, style);
+  const prompt = buildPrompt(mode, shade, style);
   const errors: string[] = [];
   const wanted = (process.env.GEMINI_IMAGE_SIZE || "2K").toUpperCase();
 
@@ -120,6 +139,7 @@ export async function POST(req: Request) {
           return json({
             image: await toJpeg(part.inlineData.data, part.inlineData.mimeType || "image/png"),
             model,
+            mode,
             shade,
             style,
             size: imageSize ?? "1K",
