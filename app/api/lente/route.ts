@@ -1,4 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
+import sharp from "sharp";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -9,6 +10,7 @@ export const maxDuration = 120;
  * Variáveis de ambiente:
  *  - GEMINI_API_KEY      (obrigatória) chave do Google AI Studio
  *  - GEMINI_IMAGE_MODELS (opcional) modelos em ordem de preferência, separados por vírgula
+ *  - GEMINI_IMAGE_SIZE   (opcional) "1K", "2K" (padrão) ou "4K"
  *  - ACCESS_CODE         (opcional) se definido, o app precisa enviar este código
  */
 
@@ -33,14 +35,34 @@ const MAX_BYTES = 6 * 1024 * 1024;
 
 function buildPrompt(shade: string, style: string) {
   return [
-    "This is a close-up photo of a person's smile. Act as a cosmetic dentistry smile-design simulator.",
-    "Edit ONLY the visible teeth: replace them with porcelain dental veneers (dental contact lenses).",
+    "You are a cosmetic-dentistry smile-design simulator used by a dentist to show a patient a realistic preview. The image is a real close-up photograph of the lower half of a patient's face, smiling.",
+    "",
+    "TASK: edit ONLY the visible teeth so they look as they would after porcelain veneers (dental contact lenses) placed by an excellent cosmetic dentist.",
     STYLES[style],
-    `Tooth shade: ${SHADES[shade]}.`,
-    "Fix crooked, chipped, worn or stained teeth and close small gaps. Keep the same number of visible teeth and the same position of the dental arch.",
-    "Keep EVERYTHING ELSE exactly identical: lips, lip shape, mouth opening, gums (just healthy pink), tongue, skin, facial hair, lighting, shadows, camera angle, framing, crop and resolution.",
-    "The result must be photorealistic, matching the photo's lighting, grain and focus. Do not add text, watermarks or borders. Return only the edited image.",
+    `Target shade: ${SHADES[shade]}.`,
+    "Correct crooked, rotated, chipped, worn, short or stained teeth and close small gaps. Keep the same number of visible teeth, the same dental arch, the same midline and the same smile width. Each tooth must stay where it is — improve its shape, do not move the smile.",
+    "",
+    "REALISM (most important):",
+    "- It must look like an unedited photograph of real teeth, never like a render, sticker or whitening filter.",
+    "- Real enamel: subtle translucency at the incisal edges, slightly warmer tone near the gum line, fine surface texture, soft natural specular highlights consistent with the light direction in the photo.",
+    "- Visible individual teeth with natural interproximal shadows and embrasures; never a single flat white strip. Back teeth fade naturally into the shadow of the cheeks.",
+    "- White but not glowing: brightness must be plausible for the photo's exposure. No bloom, no blown-out pure white.",
+    "- Match the photo's sharpness, noise/grain, depth of field and white balance exactly.",
+    "- Gums stay the same shape and position, healthy pink, with natural gingival margins around each tooth.",
+    "",
+    "DO NOT CHANGE anything else: lips (shape, color, texture, position), mouth opening, tongue, skin, pores, wrinkles, facial hair, nose, chin, background, lighting, framing. Do not zoom, crop, rotate, shift or re-frame — every pixel outside the teeth must stay aligned with the original.",
+    "No text, watermark, border or split view. Output only the edited photograph.",
   ].join("\n");
+}
+
+/** PNG grande estoura o limite de resposta da Vercel: devolve JPEG de alta qualidade. */
+async function toJpeg(b64: string, mime: string): Promise<string> {
+  try {
+    const buf = await sharp(Buffer.from(b64, "base64")).jpeg({ quality: 93, chromaSubsampling: "4:4:4" }).toBuffer();
+    return `data:image/jpeg;base64,${buf.toString("base64")}`;
+  } catch {
+    return `data:${mime};base64,${b64}`;
+  }
 }
 
 function json(body: unknown, status = 200) {
@@ -78,31 +100,42 @@ export async function POST(req: Request) {
   const ai = new GoogleGenAI({ apiKey });
   const prompt = buildPrompt(shade, style);
   const errors: string[] = [];
+  const wanted = (process.env.GEMINI_IMAGE_SIZE || "2K").toUpperCase();
 
   for (const model of models) {
-    // até 2 tentativas por modelo (falhas transitórias / resposta sem imagem)
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // 1ª tentativa em alta resolução; se o modelo não aceitar o tamanho, cai para o padrão.
+    let imageSize: string | undefined = wanted === "1K" ? undefined : wanted;
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const res = await ai.models.generateContent({
           model,
-          contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType, data } }] }],
-          config: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: "1:1" } },
+          contents: [{ role: "user", parts: [{ inlineData: { mimeType, data } }, { text: prompt }] }],
+          config: {
+            responseModalities: ["IMAGE"],
+            imageConfig: { aspectRatio: "1:1", ...(imageSize ? { imageSize } : {}) },
+          },
         });
         const part = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
         if (part?.inlineData?.data) {
           return json({
-            image: `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`,
+            image: await toJpeg(part.inlineData.data, part.inlineData.mimeType || "image/png"),
             model,
             shade,
             style,
+            size: imageSize ?? "1K",
           });
         }
         const reason = res.candidates?.[0]?.finishReason ?? res.promptFeedback?.blockReason ?? "sem imagem";
         errors.push(`${model}: ${reason}`);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        errors.push(`${model}: ${msg.slice(0, 200)}`);
-        // modelo inexistente / sem permissão / chave inválida: não adianta repetir
+        errors.push(`${model}${imageSize ? ` (${imageSize})` : ""}: ${msg.slice(0, 200)}`);
+        // tamanho não suportado por este modelo: tenta de novo no tamanho padrão
+        if (imageSize && /\b400\b|INVALID_ARGUMENT|image_?size/i.test(msg) && !/API key/i.test(msg)) {
+          imageSize = undefined;
+          continue;
+        }
+        // modelo inexistente / sem permissão / chave inválida / cota: não adianta repetir
         if (/\b(400|401|403|404|429)\b|not found|permission|API key|quota/i.test(msg)) break;
       }
     }

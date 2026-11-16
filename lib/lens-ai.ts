@@ -1,66 +1,119 @@
-import type { SimulationData } from "./analyze";
+import { exportImages, viewRect, type SimImages, type SimulationData } from "./analyze";
 
 /**
  * Lente de contato com IA generativa.
  *
- * Só um recorte quadrado da boca é enviado ao servidor. O resultado é colado de
- * volta APENAS na região da boca (com borda suave), então o resto do rosto
- * continua idêntico à foto original.
+ * Só um recorte quadrado da parte de baixo do rosto é enviado ao servidor.
+ * O resultado volta e passa por três etapas para ficar natural:
+ *   1. alinhamento — corrige pequenos deslocamentos que a IA introduz;
+ *   2. igualação de cor — ajusta o tom da imagem gerada ao da foto original;
+ *   3. colagem só na região da boca, com borda suave.
+ * O resto do rosto continua idêntico à foto original.
  */
 
-const SEND_SIZE = 1024;
+const SEND_SIZE = 1536;
+const ALIGN_SIZE = 192;
 
-export type LensAIResult = { full: string; zoom: string };
+export type LensAIResult = SimImages;
 export type LensStyle = "natural" | "hollywood";
 
 export class LensAIError extends Error {}
 
-type Rect = { x: number; y: number; w: number; h: number };
-
-function mouthSquare(sim: SimulationData): Rect {
-  const { box, source } = sim;
-  const side = Math.min(Math.round(Math.max(box.w, box.h * 1.6) * 2.2), source.width, source.height);
-  const cx = box.x + box.w / 2;
-  const cy = box.y + box.h / 2;
-  const x = Math.round(Math.min(Math.max(0, cx - side / 2), source.width - side));
-  const y = Math.round(Math.min(Math.max(0, cy - side / 2), source.height - side));
-  return { x, y, w: side, h: side };
-}
-
-/** Máscara suave: contorno da boca um pouco expandido + desfoque. */
-function featheredMask(sim: SimulationData, W: number, H: number): HTMLCanvasElement {
+/** Contorno da boca em coordenadas do recorte (0..size), expandido por `grow`. */
+function mouthPath(ctx: CanvasRenderingContext2D, sim: SimulationData, size: number, grow: number) {
+  const sq = viewRect(sim);
   const { poly, box } = sim;
   const cx = box.x + box.w / 2;
   const cy = box.y + box.h / 2;
-  const grow = 1.08;
-  const feather = Math.max(2, box.w * 0.035);
-
-  // Desenha em resolução reduzida e amplia: funciona como desfoque em qualquer
-  // navegador (o ctx.filter não existe em Safari antigo).
-  const k = Math.max(1, feather / 1.5);
-  const small = document.createElement("canvas");
-  small.width = Math.ceil(W / k);
-  small.height = Math.ceil(H / k);
-  const s = small.getContext("2d")!;
-  s.fillStyle = "#fff";
-  s.beginPath();
+  const k = size / sq.w;
+  ctx.beginPath();
   poly.forEach((p, i) => {
-    const x = (cx + (p.x - cx) * grow) / k;
-    const y = (cy + (p.y - cy) * grow) / k;
-    if (i) s.lineTo(x, y);
-    else s.moveTo(x, y);
+    const x = (cx + (p.x - cx) * grow - sq.x) * k;
+    const y = (cy + (p.y - cy) * grow - sq.y) * k;
+    if (i) ctx.lineTo(x, y);
+    else ctx.moveTo(x, y);
   });
-  s.closePath();
-  s.fill();
+  ctx.closePath();
+}
 
-  const mask = document.createElement("canvas");
-  mask.width = W;
-  mask.height = H;
-  const m = mask.getContext("2d")!;
-  m.imageSmoothingEnabled = true;
-  m.imageSmoothingQuality = "high";
-  m.drawImage(small, 0, 0, W, H);
-  return mask;
+function canvas(w: number, h = w) {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  return c;
+}
+
+/** Máscara binária (Uint8) do contorno da boca expandido, no tamanho `size`. */
+function maskBits(sim: SimulationData, size: number, grow: number): Uint8Array {
+  const c = canvas(size);
+  const ctx = c.getContext("2d")!;
+  mouthPath(ctx, sim, size, grow);
+  ctx.fill();
+  const d = ctx.getImageData(0, 0, size, size).data;
+  const out = new Uint8Array(size * size);
+  for (let i = 0; i < out.length; i++) out[i] = d[i * 4 + 3] > 127 ? 1 : 0;
+  return out;
+}
+
+function small(src: CanvasImageSource, sx: number, sy: number, sw: number, sh: number): Uint8ClampedArray {
+  const c = canvas(ALIGN_SIZE);
+  const ctx = c.getContext("2d", { willReadFrequently: true })!;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(src, sx, sy, sw, sh, 0, 0, ALIGN_SIZE, ALIGN_SIZE);
+  return ctx.getImageData(0, 0, ALIGN_SIZE, ALIGN_SIZE).data;
+}
+
+/**
+ * Compara a foto original e a gerada FORA da boca (pele, lábios) para achar
+ * o deslocamento e o ajuste de cor que fazem as duas coincidirem.
+ */
+function registration(sim: SimulationData, gen: HTMLImageElement) {
+  const sq = viewRect(sim);
+  const N = ALIGN_SIZE;
+  const a = small(sim.source, sq.x, sq.y, sq.w, sq.h);
+  const b = small(gen, 0, 0, gen.naturalWidth, gen.naturalHeight);
+  const inner = maskBits(sim, N, 1.35);
+  const outer = maskBits(sim, N, 2.4);
+  const lum = (d: Uint8ClampedArray, i: number) => d[i * 4] * 0.3 + d[i * 4 + 1] * 0.59 + d[i * 4 + 2] * 0.11;
+
+  const R = 6;
+  let best = { dx: 0, dy: 0, err: Infinity };
+  let zeroErr = Infinity;
+  for (let dy = -R; dy <= R; dy++)
+    for (let dx = -R; dx <= R; dx++) {
+      let err = 0;
+      let n = 0;
+      for (let y = R; y < N - R; y += 2)
+        for (let x = R; x < N - R; x += 2) {
+          const i = y * N + x;
+          if (inner[i] || !outer[i]) continue;
+          err += Math.abs(lum(a, i) - lum(b, (y + dy) * N + (x + dx)));
+          n++;
+        }
+      if (!n) continue;
+      err /= n;
+      if (dx === 0 && dy === 0) zeroErr = err;
+      if (err < best.err) best = { dx, dy, err };
+    }
+  // só desloca se melhorar de verdade (evita "tremer" por ruído)
+  if (!(best.err < zeroErr * 0.9)) best = { dx: 0, dy: 0, err: zeroErr };
+
+  // ganho de cor por canal, medido no anel em volta da boca
+  const sum = { a: [0, 0, 0], b: [0, 0, 0] };
+  for (let y = R; y < N - R; y++)
+    for (let x = R; x < N - R; x++) {
+      const i = y * N + x;
+      if (inner[i] || !outer[i]) continue;
+      const j = (y + best.dy) * N + (x + best.dx);
+      for (let c = 0; c < 3; c++) {
+        sum.a[c] += a[i * 4 + c];
+        sum.b[c] += b[j * 4 + c];
+      }
+    }
+  const gain = sum.a.map((v, c) => Math.min(1.2, Math.max(0.83, sum.b[c] > 0 ? v / sum.b[c] : 1)));
+
+  // (dx,dy): a foto gerada está deslocada desse tanto em relação à original
+  return { dx: (best.dx / N) * sq.w, dy: (best.dy / N) * sq.w, gain };
 }
 
 export async function generateLensAI(
@@ -69,13 +122,12 @@ export async function generateLensAI(
   style: LensStyle,
   accessCode: string,
 ): Promise<LensAIResult> {
-  const sq = mouthSquare(sim);
-  const sendSide = SEND_SIZE; // amplia recortes pequenos: a IA trabalha melhor com mais pixels
-  const send = document.createElement("canvas");
-  send.width = sendSide;
-  send.height = sendSide;
-  send.getContext("2d")!.drawImage(sim.source, sq.x, sq.y, sq.w, sq.h, 0, 0, sendSide, sendSide);
-  const image = send.toDataURL("image/jpeg", 0.92);
+  const sq = viewRect(sim);
+  const send = canvas(SEND_SIZE);
+  const sctx = send.getContext("2d")!;
+  sctx.imageSmoothingQuality = "high";
+  sctx.drawImage(sim.source, sq.x, sq.y, sq.w, sq.h, 0, 0, SEND_SIZE, SEND_SIZE);
+  const image = send.toDataURL("image/jpeg", 0.93);
 
   let res: Response;
   try {
@@ -91,34 +143,42 @@ export async function generateLensAI(
   if (!res.ok || !data.image) throw new LensAIError(data.error || "A IA não conseguiu gerar a imagem. Tente de novo.");
 
   const gen = await loadImage(data.image);
+  const { dx, dy, gain } = registration(sim, gen);
 
-  // Coloca a imagem gerada no lugar do recorte
-  const W = sim.source.width;
-  const H = sim.source.height;
-  const layer = document.createElement("canvas");
-  layer.width = W;
-  layer.height = H;
-  const l = layer.getContext("2d")!;
-  l.drawImage(gen, sq.x, sq.y, sq.w, sq.h);
-  // Mantém só a região da boca
+  // Imagem gerada, alinhada e com a cor igualada, no tamanho do recorte original
+  const S = sq.w;
+  const layer = canvas(S);
+  const l = layer.getContext("2d", { willReadFrequently: true })!;
+  l.imageSmoothingQuality = "high";
+  l.drawImage(gen, -dx, -dy, S, S);
+  if (gain.some((g) => Math.abs(g - 1) > 0.01)) {
+    const img = l.getImageData(0, 0, S, S);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      d[i] = Math.min(255, d[i] * gain[0]);
+      d[i + 1] = Math.min(255, d[i + 1] * gain[1]);
+      d[i + 2] = Math.min(255, d[i + 2] * gain[2]);
+    }
+    l.putImageData(img, 0, 0);
+  }
+
+  // Máscara suave da boca: desenhada pequena e ampliada (desfoque que funciona em qualquer navegador)
+  const feather = Math.max(3, sim.box.w * 0.05);
+  const k = Math.max(1, feather / 1.5);
+  const tiny = canvas(Math.ceil(S / k));
+  const t = tiny.getContext("2d")!;
+  t.fillStyle = "#fff";
+  mouthPath(t, sim, tiny.width, 1.16);
+  t.fill();
   l.globalCompositeOperation = "destination-in";
-  l.drawImage(featheredMask(sim, W, H), 0, 0);
+  l.drawImage(tiny, 0, 0, S, S);
 
-  const out = document.createElement("canvas");
-  out.width = W;
-  out.height = H;
+  const out = canvas(sim.source.width, sim.source.height);
   const o = out.getContext("2d")!;
   o.drawImage(sim.source, 0, 0);
-  o.drawImage(layer, 0, 0);
+  o.drawImage(layer, sq.x, sq.y);
 
-  const { crop } = sim;
-  const z = document.createElement("canvas");
-  const scale = Math.min(1, 520 / crop.w);
-  z.width = Math.round(crop.w * scale);
-  z.height = Math.round(crop.h * scale);
-  z.getContext("2d")!.drawImage(out, crop.x, crop.y, crop.w, crop.h, 0, 0, z.width, z.height);
-
-  return { full: out.toDataURL("image/jpeg", 0.88), zoom: z.toDataURL("image/jpeg", 0.8) };
+  return exportImages(out, sim);
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {

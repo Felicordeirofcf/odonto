@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Camera,
+  Download,
   CircleCheck,
   History,
   ImageUp,
@@ -28,6 +29,7 @@ import {
 } from "@/lib/analyze";
 import { labToCss, type RGB } from "@/lib/color";
 import { LensAIError, generateLensAI, type LensAIResult, type LensStyle } from "@/lib/lens-ai";
+import BeforeAfter from "@/components/BeforeAfter";
 import { ALL_SHADES_BY_VALUE, BLEACH_SHADES, SHADE_GROUPS, VITA_SHADES, findShade, naturalWhiteningTarget, type Shade } from "@/lib/shades";
 
 type SimKey = "atual" | "clareamento" | "lente";
@@ -39,7 +41,7 @@ const SIM_LABELS: Record<SimKey, string> = {
 const LENS_OPTIONS = ["BL1", "BL2", "BL3", "BL4", "B1"];
 const WHITENING_OPTIONS = VITA_SHADES.slice(0, 6).map((s) => s.code); // B1..C1
 
-const MAX_SIDE = 1600;
+const MAX_SIDE = 2048;
 const HISTORY_KEY = "odonto.sorriso.historico";
 const SETTINGS_KEY = "odonto.sorriso.ajustes";
 const ACCESS_KEY = "odonto.sorriso.codigo";
@@ -453,7 +455,18 @@ export default function SmileAnalyzer() {
           </div>
 
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={shown[simTab].zoom} alt={SIM_LABELS[simTab]} className="mt-3 w-full rounded-xl border" />
+          {simTab === "atual" ? (
+            <img src={shown.atual.view} alt={SIM_LABELS.atual} className="mt-3 aspect-square w-full rounded-xl border object-cover" />
+          ) : (
+            <BeforeAfter
+              before={shown.atual.view}
+              after={shown[simTab].view}
+              label={`${SIM_LABELS[simTab]} · ${shown[simTab].code}`}
+            />
+          )}
+          {simTab !== "atual" && (
+            <p className="mt-1.5 text-center text-xs text-gray-400">Arraste a linha para comparar antes e depois</p>
+          )}
 
           <div className="mt-3 grid grid-cols-3 items-start gap-2">
             {(Object.keys(SIM_LABELS) as SimKey[]).map((k) => (
@@ -551,6 +564,22 @@ export default function SmileAnalyzer() {
                 {aiError && <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p>}
               </div>
             </>
+          )}
+
+          {simTab !== "atual" && (
+            <button
+              onClick={() =>
+                shareBeforeAfter(
+                  shown.atual.view,
+                  shown[simTab].view,
+                  `${SIM_LABELS[simTab]} · ${shown[simTab].code}`,
+                  patient.trim(),
+                )
+              }
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 px-4 py-3 font-semibold text-gray-700"
+            >
+              <Download className="size-5" /> Baixar / enviar antes e depois
+            </button>
           )}
 
           <details className="mt-3 text-sm text-gray-600">
@@ -833,4 +862,53 @@ function ShadePicker({
       </div>
     </div>
   );
+}
+
+/** Monta uma imagem lado a lado (antes | depois) e compartilha (WhatsApp etc.) ou baixa. */
+async function shareBeforeAfter(before: string, after: string, label: string, patient: string) {
+  const load = (src: string) =>
+    new Promise<HTMLImageElement>((ok, fail) => {
+      const i = new Image();
+      i.onload = () => ok(i);
+      i.onerror = fail;
+      i.src = src;
+    });
+  const [a, b] = await Promise.all([load(before), load(after)]);
+  const S = Math.min(1080, a.naturalWidth);
+  const gap = Math.round(S * 0.02);
+  const bar = Math.round(S * 0.11);
+  const c = document.createElement("canvas");
+  c.width = S * 2 + gap;
+  c.height = S + bar;
+  const x = c.getContext("2d")!;
+  x.fillStyle = "#ffffff";
+  x.fillRect(0, 0, c.width, c.height);
+  x.drawImage(a, 0, 0, S, S);
+  x.drawImage(b, S + gap, 0, S, S);
+  x.fillStyle = "#1f2328";
+  x.font = `600 ${Math.round(bar * 0.4)}px system-ui, sans-serif`;
+  x.textAlign = "center";
+  x.textBaseline = "middle";
+  x.fillText("Antes", S / 2, S + bar / 2);
+  x.fillStyle = "#0f8275";
+  x.fillText(label, S + gap + S / 2, S + bar / 2);
+
+  const blob = await new Promise<Blob | null>((r) => c.toBlob(r, "image/jpeg", 0.92));
+  if (!blob) return;
+  const name = `sorriso-${(patient || "simulacao").toLowerCase().replace(/[^a-z0-9]+/g, "-")}.jpg`;
+  const file = new File([blob], name, { type: "image/jpeg" });
+  try {
+    if (navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ files: [file], title: "Simulação do sorriso" });
+      return;
+    }
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") return; // usuário cancelou
+  }
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
 }

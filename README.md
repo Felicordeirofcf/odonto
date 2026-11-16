@@ -19,6 +19,7 @@ Na Vercel → Settings → Environment Variables:
 |---|---|---|
 | `GEMINI_API_KEY` | sim | Chave do Google AI Studio (aistudio.google.com → Get API key). Precisa de faturamento ativo para os modelos de imagem. |
 | `ACCESS_CODE` | recomendado | Código que o app pede para gerar (evita que estranhos gastem seus créditos). Digite-o em "Ajustes da IA". |
+| `GEMINI_IMAGE_SIZE` | não | Resolução gerada: `1K`, `2K` (padrão) ou `4K`. Maior = mais nítido e mais caro. |
 | `GEMINI_IMAGE_MODELS` | não | Modelos em ordem de preferência. Padrão: `gemini-3-pro-image,gemini-3.1-flash-image`. |
 
 O texto (prompt) enviado à IA fica em `app/api/lente/route.ts` — dá para ajustar o estilo com o cliente.

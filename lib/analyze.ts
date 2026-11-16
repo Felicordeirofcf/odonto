@@ -276,8 +276,8 @@ export type SimulationOptions = {
 };
 
 /** Gera a foto simulada (inteira e recorte da boca) como data URLs. */
-export function renderSimulation(sim: SimulationData, opts: SimulationOptions): { full: string; zoom: string } {
-  const { source, box, crop, weights, labs, raw } = sim;
+export function renderSimulation(sim: SimulationData, opts: SimulationOptions): SimImages {
+  const { source, box, weights, labs, raw } = sim;
   const out = document.createElement("canvas");
   out.width = source.width;
   out.height = source.height;
@@ -304,10 +304,46 @@ export function renderSimulation(sim: SimulationData, opts: SimulationOptions): 
   }
   ctx.putImageData(img, box.x, box.y);
 
-  const z = document.createElement("canvas");
-  const scale = Math.min(1, 520 / crop.w);
-  z.width = Math.round(crop.w * scale);
-  z.height = Math.round(crop.h * scale);
-  z.getContext("2d")!.drawImage(out, crop.x, crop.y, crop.w, crop.h, 0, 0, z.width, z.height);
-  return { full: out.toDataURL("image/jpeg", 0.88), zoom: z.toDataURL("image/jpeg", 0.8) };
+  return exportImages(out, sim);
+}
+
+export type SimImages = {
+  /** Foto inteira. */
+  full: string;
+  /** Recorte justo da boca (miniaturas). */
+  zoom: string;
+  /** Recorte quadrado da parte de baixo do rosto (comparação antes/depois). */
+  view: string;
+};
+
+export type Rect = { x: number; y: number; w: number; h: number };
+
+/** Quadrado em volta da boca, com nariz e queixo de contexto. */
+export function viewRect(sim: SimulationData): Rect {
+  const { box, source } = sim;
+  const side = Math.min(Math.round(Math.max(box.w * 2.6, box.h * 3.2)), source.width, source.height);
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  const x = Math.round(Math.min(Math.max(0, cx - side / 2), source.width - side));
+  const y = Math.round(Math.min(Math.max(0, cy - side / 2), source.height - side));
+  return { x, y, w: side, h: side };
+}
+
+function cropTo(src: HTMLCanvasElement, r: Rect, maxW: number, quality: number): string {
+  const c = document.createElement("canvas");
+  const scale = Math.min(1, maxW / r.w);
+  c.width = Math.round(r.w * scale);
+  c.height = Math.round(r.h * scale);
+  const ctx = c.getContext("2d")!;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(src, r.x, r.y, r.w, r.h, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", quality);
+}
+
+export function exportImages(out: HTMLCanvasElement, sim: SimulationData): SimImages {
+  return {
+    full: out.toDataURL("image/jpeg", 0.9),
+    zoom: cropTo(out, sim.crop, 520, 0.8),
+    view: cropTo(out, viewRect(sim), 1080, 0.9),
+  };
 }
