@@ -10,6 +10,7 @@
     "postinstall": "node scripts/copy-mediapipe.mjs"
   },
   "dependencies": {
+    "@google/genai": "^3.3.0",
     "@mediapipe/tasks-vision": "^1.2.3",
     "lucide-react": "^1.73.0",
     "next": "^16.4.6",

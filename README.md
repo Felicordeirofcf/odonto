@@ -8,7 +8,20 @@ Primeiro módulo do CRM odontológico. A pessoa tira uma foto (câmera ao vivo) 
 4. **Simula 3 versões do sorriso**:
    - **Sem lente (atual)**
    - **Clareamento natural** (sobe ~5 tons na escala, mantendo a textura natural; tom final ajustável)
-   - **Com lente** (cores BL1–BL4/B1, acabamento mais uniforme, tipo porcelana)
+   - **Com lente** (cores BL1–BL4/B1, estilo Natural ou Hollywood)
+5. **Lente realista com IA generativa** (Google Gemini — Nano Banana Pro, com Nano Banana 2 como reserva): redesenha os dentes com formato de lente (alinha, corrige, clareia). Só o recorte da boca é enviado, e o resultado é colado de volta apenas na região dos dentes — o resto do rosto fica idêntico. Exige marcar a autorização do paciente.
+
+## Configurar a IA generativa (lente)
+
+Na Vercel → Settings → Environment Variables:
+
+| Variável | Obrigatória | Para quê |
+|---|---|---|
+| `GEMINI_API_KEY` | sim | Chave do Google AI Studio (aistudio.google.com → Get API key). Precisa de faturamento ativo para os modelos de imagem. |
+| `ACCESS_CODE` | recomendado | Código que o app pede para gerar (evita que estranhos gastem seus créditos). Digite-o em "Ajustes da IA". |
+| `GEMINI_IMAGE_MODELS` | não | Modelos em ordem de preferência. Padrão: `gemini-3-pro-image,gemini-3.1-flash-image`. |
+
+O texto (prompt) enviado à IA fica em `app/api/lente/route.ts` — dá para ajustar o estilo com o cliente.
 
 ## Rodar localmente
 

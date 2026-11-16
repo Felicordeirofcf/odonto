@@ -13,6 +13,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   SwitchCamera,
+  Wand2,
   Trash2,
   X,
 } from "lucide-react";
@@ -26,6 +27,7 @@ import {
   type AnalysisSettings,
 } from "@/lib/analyze";
 import { labToCss, type RGB } from "@/lib/color";
+import { LensAIError, generateLensAI, type LensAIResult, type LensStyle } from "@/lib/lens-ai";
 import { ALL_SHADES_BY_VALUE, BLEACH_SHADES, SHADE_GROUPS, VITA_SHADES, findShade, naturalWhiteningTarget, type Shade } from "@/lib/shades";
 
 type SimKey = "atual" | "clareamento" | "lente";
@@ -40,6 +42,7 @@ const WHITENING_OPTIONS = VITA_SHADES.slice(0, 6).map((s) => s.code); // B1..C1
 const MAX_SIDE = 1600;
 const HISTORY_KEY = "odonto.sorriso.historico";
 const SETTINGS_KEY = "odonto.sorriso.ajustes";
+const ACCESS_KEY = "odonto.sorriso.codigo";
 
 type Saved = {
   id: string;
@@ -79,6 +82,13 @@ export default function SmileAnalyzer() {
   const [simTab, setSimTab] = useState<SimKey>("lente");
   const [whiteningCode, setWhiteningCode] = useState<string | null>(null);
   const [lensCode, setLensCode] = useState("BL2");
+  const [lensStyle, setLensStyle] = useState<LensStyle>("natural");
+  const [aiCache, setAiCache] = useState<Record<string, LensAIResult>>({});
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [consent, setConsent] = useState(false);
+  const [lensView, setLensView] = useState<"ia" | "cor">("ia");
+  const [accessCode, setAccessCode] = useState("");
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -90,6 +100,7 @@ export default function SmileAnalyzer() {
       setHistory(JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"));
       const s = localStorage.getItem(SETTINGS_KEY);
       if (s) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(s) });
+      setAccessCode(localStorage.getItem(ACCESS_KEY) || "");
     } catch {}
     loadLandmarker().catch(() => {});
   }, []);
@@ -147,6 +158,9 @@ export default function SmileAnalyzer() {
     setSavedId(null);
     setWhiteningCode(null);
     setSimTab("lente");
+    setAiCache({});
+    setAiError(null);
+    setConsent(false);
   };
 
   const capture = () => {
@@ -202,6 +216,8 @@ export default function SmileAnalyzer() {
     setError(null);
     setResult(null);
     setSavedId(null);
+    setAiCache({});
+    setAiError(null);
     try {
       setResult(await analyzeSmile(photo, settings, whiteRef));
     } catch (e) {
@@ -227,6 +243,30 @@ export default function SmileAnalyzer() {
     };
   }, [result, current, whitening, lens]);
 
+  const aiKey = `${lensCode}|${lensStyle}`;
+  const aiCurrent = aiCache[aiKey] ?? null;
+  const shown = sims && {
+    ...sims,
+    lente: aiCurrent && lensView === "ia" ? { ...aiCurrent, code: lensCode } : sims.lente,
+  };
+
+  const generateAI = async () => {
+    if (!result) return;
+    setAiBusy(true);
+    setAiError(null);
+    try {
+      const r = await generateLensAI(result.sim, lensCode, lensStyle, accessCode);
+      setAiCache((c) => ({ ...c, [aiKey]: r }));
+      setLensView("ia");
+      setSavedId(null);
+    } catch (e) {
+      setAiError(e instanceof LensAIError ? e.message : "Falha ao gerar a lente com IA.");
+      console.error(e);
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
   const save = () => {
     if (!result) return;
     const entry: Saved = {
@@ -237,7 +277,7 @@ export default function SmileAnalyzer() {
       shades: result.matches.map((m) => ({ code: m.shade.code, confidence: m.confidence })),
       lab: result.measured,
       sims: sims
-        ? (Object.keys(SIM_LABELS) as SimKey[]).map((k) => ({ key: k, code: sims[k].code, zoom: sims[k].zoom }))
+        ? (Object.keys(SIM_LABELS) as SimKey[]).map((k) => ({ key: k, code: shown![k].code, zoom: shown![k].zoom }))
         : undefined,
     };
     const next = [entry, ...history].slice(0, 20);
@@ -365,7 +405,7 @@ export default function SmileAnalyzer() {
       </section>
 
       {/* Simulação */}
-      {result && sims && (
+      {result && shown && (
         <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm sm:p-5">
           <h2 className="flex items-center gap-2 text-lg font-semibold">
             <Sparkles className="size-5 text-brand-600" /> 2. Como ficaria o sorriso
@@ -381,20 +421,23 @@ export default function SmileAnalyzer() {
                 }`}
               >
                 {SIM_LABELS[k]}
-                <span className="block text-xs font-semibold opacity-70">{sims[k].code}</span>
+                <span className="block text-xs font-semibold opacity-70">
+                  {shown[k].code}
+                  {k === "lente" && aiCurrent && lensView === "ia" ? " · IA" : ""}
+                </span>
               </button>
             ))}
           </div>
 
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={sims[simTab].zoom} alt={SIM_LABELS[simTab]} className="mt-3 w-full rounded-xl border" />
+          <img src={shown[simTab].zoom} alt={SIM_LABELS[simTab]} className="mt-3 w-full rounded-xl border" />
 
           <div className="mt-3 grid grid-cols-3 items-start gap-2">
             {(Object.keys(SIM_LABELS) as SimKey[]).map((k) => (
               <button key={k} onClick={() => setSimTab(k)} className="text-center text-xs text-gray-500">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={sims[k].zoom}
+                  src={shown[k].zoom}
                   alt=""
                   className={`w-full rounded-lg border-2 ${simTab === k ? "border-brand-500" : "border-transparent"}`}
                 />
@@ -407,18 +450,90 @@ export default function SmileAnalyzer() {
             <ShadePicker
               label="Cor final do clareamento"
               options={WHITENING_OPTIONS}
-              value={sims.clareamento.code}
+              value={shown.clareamento.code}
               onChange={setWhiteningCode}
             />
           )}
           {simTab === "lente" && (
-            <ShadePicker label="Cor da lente" options={LENS_OPTIONS} value={lensCode} onChange={setLensCode} />
+            <>
+              <div className="mt-3">
+                <div className="text-sm font-medium text-gray-600">Estilo da lente</div>
+                <div className="mt-1.5 grid grid-cols-2 gap-2">
+                  {(
+                    [
+                      ["natural", "Natural", "Formato real, discreto"],
+                      ["hollywood", "Hollywood", "Alinhado e uniforme"],
+                    ] as const
+                  ).map(([k, label, hint]) => (
+                    <button
+                      key={k}
+                      onClick={() => setLensStyle(k)}
+                      className={`rounded-lg border px-3 py-2 text-left text-sm ${
+                        lensStyle === k ? "border-brand-500 bg-brand-50 text-brand-700" : "border-gray-200 text-gray-600"
+                      }`}
+                    >
+                      <span className="font-semibold">{label}</span>
+                      <span className="block text-xs opacity-70">{hint}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <ShadePicker label="Cor da lente" options={LENS_OPTIONS} value={lensCode} onChange={setLensCode} />
+
+              <div className="mt-4 rounded-xl border border-violet-200 bg-violet-50/60 p-3">
+                <div className="flex items-center gap-2 font-semibold text-violet-800">
+                  <Wand2 className="size-5" /> Lente realista com IA
+                </div>
+                {aiCurrent && (
+                    <span className="mt-2 inline-flex overflow-hidden rounded-lg border border-violet-200 text-sm font-medium">
+                      {(["ia", "cor"] as const).map((v) => (
+                        <button
+                          key={v}
+                          onClick={() => setLensView(v)}
+                          className={`px-3 py-1.5 ${lensView === v ? "bg-violet-600 text-white" : "bg-white text-violet-700"}`}
+                        >
+                          {v === "ia" ? "Com IA" : "Só cor"}
+                        </button>
+                      ))}
+                    </span>
+                )}
+                <p className="mt-1 text-xs text-violet-900/70">
+                  A IA redesenha os dentes com formato de lente (alinha, corrige e clareia). Só o recorte da boca é
+                  enviado; o resto do rosto continua igual.
+                </p>
+                {!aiCurrent && (
+                  <label className="mt-2 flex items-start gap-2 text-sm text-violet-900">
+                    <input
+                      type="checkbox"
+                      checked={consent}
+                      onChange={(e) => setConsent(e.target.checked)}
+                      className="mt-0.5 size-4 accent-violet-600"
+                    />
+                    O paciente autorizou o envio da foto para a simulação.
+                  </label>
+                )}
+                <button
+                  onClick={generateAI}
+                  disabled={aiBusy || (!aiCurrent && !consent)}
+                  className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-3 font-semibold text-white disabled:opacity-50"
+                >
+                  {aiBusy ? <LoaderCircle className="size-5 animate-spin" /> : <Wand2 className="size-5" />}
+                  {aiBusy
+                    ? "Gerando lente… (até 40 s)"
+                    : aiCurrent
+                      ? "Gerar outra versão"
+                      : `Gerar lente ${lensStyle === "hollywood" ? "Hollywood" : "natural"} ${lensCode} com IA`}
+                </button>
+                {aiError && <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p>}
+              </div>
+            </>
           )}
 
           <details className="mt-3 text-sm text-gray-600">
             <summary className="cursor-pointer">Ver foto inteira</summary>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={sims[simTab].full} alt="" className="mt-2 w-full rounded-xl border" />
+            <img src={shown[simTab].full} alt="" className="mt-2 w-full rounded-xl border" />
           </details>
 
           <p className="mt-3 text-xs text-gray-400">
@@ -534,6 +649,19 @@ export default function SmileAnalyzer() {
                 />
               </label>
             ))}
+            <label className="block text-sm">
+              <span className="text-gray-600">Código de acesso da IA generativa (se a clínica definiu um)</span>
+              <input
+                value={accessCode}
+                onChange={(e) => {
+                  setAccessCode(e.target.value);
+                  localStorage.setItem(ACCESS_KEY, e.target.value);
+                }}
+                type="password"
+                autoComplete="off"
+                className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2"
+              />
+            </label>
             <button onClick={() => setSettings(DEFAULT_SETTINGS)} className="text-sm text-brand-700 underline">
               Restaurar padrão
             </button>

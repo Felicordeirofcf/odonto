@@ -48,6 +48,8 @@ export type SimulationData = {
   labs: Float32Array;
   /** Cor mediana dos dentes na foto original (sem calibração). */
   raw: Lab;
+  /** Contorno interno da boca, em pixels da foto. */
+  poly: { x: number; y: number }[];
 };
 
 export class AnalysisError extends Error {}
@@ -241,6 +243,7 @@ export async function analyzeSmile(
       weights: toothWeights,
       labs,
       raw,
+      poly,
     },
   };
 }
