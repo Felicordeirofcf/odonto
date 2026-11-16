@@ -105,6 +105,23 @@ const list = (v: string | undefined, def: string[]) =>
 /** Erros em que repetir não adianta (chave, permissão, cota, modelo inexistente). */
 const FATAL = /\b(401|403|404|429)\b|not found|permission|API key|quota|billing|verif/i;
 
+/**
+ * Registra os tokens usados e o custo estimado (veja nos logs da Vercel).
+ * Preços em US$ por 1 milhão de tokens — ajuste por variável se a OpenAI mudar.
+ */
+function logCost(model: string, quality: string | undefined, usage?: { input_tokens?: number; output_tokens?: number }) {
+  if (!usage) return console.log(`[custo] ${model} q=${quality} sem dados de uso na resposta`);
+  const inPrice = Number(process.env.OPENAI_PRICE_INPUT_PER_M || 8);
+  const outPrice = Number(process.env.OPENAI_PRICE_OUTPUT_PER_M || 30);
+  const tin = usage.input_tokens ?? 0;
+  const tout = usage.output_tokens ?? 0;
+  const usd = (tin * inPrice + tout * outPrice) / 1e6;
+  console.log(
+    `[custo] ${model} q=${quality} entrada=${tin} tokens saída=${tout} tokens ≈ US$ ${usd.toFixed(4)} ` +
+      `(preços usados: US$ ${inPrice}/M entrada, US$ ${outPrice}/M saída)`,
+  );
+}
+
 async function viaOpenAI(input: Input, errors: string[]): Promise<Generated | null> {
   const apiKey = process.env.OPENAI_API_KEY!;
   const bytes = Buffer.from(input.data, "base64");
@@ -138,7 +155,12 @@ async function viaOpenAI(input: Input, errors: string[]): Promise<Generated | nu
         status = res.status;
         text = await res.text();
         if (res.ok) {
-          const item = (JSON.parse(text) as { data?: { b64_json?: string; url?: string }[] }).data?.[0];
+          const parsed = JSON.parse(text) as {
+            data?: { b64_json?: string; url?: string }[];
+            usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number };
+          };
+          logCost(model, extras.quality, parsed.usage);
+          const item = parsed.data?.[0];
           if (item?.b64_json)
             return { b64: item.b64_json, mime: extras.output_format ? "image/jpeg" : "image/png", model };
           if (item?.url) {
