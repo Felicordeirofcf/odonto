@@ -103,18 +103,21 @@ export async function POST(req: Request) {
         const msg = e instanceof Error ? e.message : String(e);
         errors.push(`${model}: ${msg.slice(0, 200)}`);
         // modelo inexistente / sem permissão / chave inválida: não adianta repetir
-        if (/\b(400|401|403|404)\b|not found|permission|API key/i.test(msg)) break;
+        if (/\b(400|401|403|404|429)\b|not found|permission|API key|quota/i.test(msg)) break;
       }
     }
   }
 
   console.error("[lente] falha na geração", errors);
   const keyProblem = errors.some((e) => /API key|401|403|permission/i.test(e));
+  const quotaProblem = errors.length > 0 && errors.every((e) => /429|quota|RESOURCE_EXHAUSTED/i.test(e));
   return json(
     {
-      error: keyProblem
-        ? "A chave GEMINI_API_KEY foi recusada pelo Google. Confira a chave e se o faturamento está ativo."
-        : "A IA não conseguiu gerar a lente para esta foto. Tente outra foto, com o sorriso mais aberto e boa luz.",
+      error: quotaProblem
+        ? "Cota da IA esgotada no Google. Ative o faturamento (plano pago) da chave em aistudio.google.com ou aguarde alguns minutos."
+        : keyProblem
+          ? "A chave GEMINI_API_KEY foi recusada pelo Google. Confira a chave e se o faturamento está ativo."
+          : "A IA não conseguiu gerar a lente para esta foto. Tente outra foto, com o sorriso mais aberto e boa luz.",
       details: errors,
     },
     502,
