@@ -89,6 +89,7 @@ export default function SmileAnalyzer() {
   const [consent, setConsent] = useState(false);
   const [lensView, setLensView] = useState<"ia" | "cor">("ia");
   const [accessCode, setAccessCode] = useState("");
+  const [viewportH, setViewportH] = useState<number | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -147,6 +148,28 @@ export default function SmileAnalyzer() {
       stopCamera();
     };
   }, [cameraOpen, facing, stopCamera]);
+
+  // Enquanto a câmera está aberta: trava a rolagem e acompanha a altura real
+  // da tela (barra do navegador, rotação do aparelho, teclado etc.).
+  useEffect(() => {
+    if (!cameraOpen) return;
+    const html = document.documentElement;
+    const prev = { html: html.style.overflow, body: document.body.style.overflow };
+    html.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+    const update = () => setViewportH(Math.round(window.visualViewport?.height ?? window.innerHeight));
+    update();
+    window.visualViewport?.addEventListener("resize", update);
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    return () => {
+      html.style.overflow = prev.html;
+      document.body.style.overflow = prev.body;
+      window.visualViewport?.removeEventListener("resize", update);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+    };
+  }, [cameraOpen]);
 
   const setNewPhoto = (c: HTMLCanvasElement) => {
     setPhoto(c);
@@ -718,42 +741,54 @@ export default function SmileAnalyzer() {
         </section>
       )}
 
-      {/* Câmera em tela cheia */}
+      {/* Câmera em tela cheia — ocupa exatamente a área visível de qualquer celular */}
       {cameraOpen && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-black">
-          <div className="relative flex-1 overflow-hidden">
-            <video
-              ref={videoRef}
-              playsInline
-              muted
-              autoPlay
-              className={`h-full w-full object-cover ${facing === "user" ? "-scale-x-100" : ""}`}
-            />
-            {/* Guia de enquadramento */}
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-              <div className="h-[55%] w-[70%] max-w-sm rounded-[50%] border-4 border-dashed border-white/70" />
-            </div>
-            <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/60 to-transparent p-4 pt-[max(1rem,env(safe-area-inset-top))] text-center text-sm text-white">
-              Enquadre o rosto e peça um sorriso aberto
-            </div>
-            {cameraError && (
-              <div className="absolute inset-x-4 top-1/3 rounded-xl bg-white p-4 text-center text-sm text-red-700">
-                {cameraError}
-              </div>
-            )}
+        <div
+          className="fixed left-0 top-0 z-50 w-full touch-none overflow-hidden bg-black"
+          style={{ height: viewportH ? `${viewportH}px` : "100dvh" }}
+        >
+          <video
+            ref={videoRef}
+            playsInline
+            muted
+            autoPlay
+            className={`absolute inset-0 h-full w-full object-cover ${facing === "user" ? "-scale-x-100" : ""}`}
+          />
+
+          {/* Guia de enquadramento (acima da barra de botões) */}
+          <div className="pointer-events-none absolute inset-x-0 top-0 bottom-[calc(7.5rem+env(safe-area-inset-bottom))] flex items-center justify-center">
+            <div className="aspect-[3/4] h-[min(78%,95vw)] max-h-[34rem] rounded-[50%] border-4 border-dashed border-white/70" />
           </div>
-          <div className="flex items-center justify-around bg-black px-6 py-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
-            <button onClick={() => setCameraOpen(false)} className="rounded-full p-3 text-white" aria-label="Fechar">
+
+          <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/70 to-transparent px-4 pb-8 pt-[max(1rem,env(safe-area-inset-top))] text-center text-sm font-medium text-white">
+            Enquadre o rosto no oval e peça um sorriso aberto
+          </div>
+
+          {cameraError && (
+            <div className="absolute inset-x-4 top-1/3 rounded-xl bg-white p-4 text-center text-sm text-red-700">
+              {cameraError}
+            </div>
+          )}
+
+          {/* Botões sempre visíveis, por cima do vídeo */}
+          <div className="absolute inset-x-0 bottom-0 flex items-center justify-around bg-gradient-to-t from-black/80 via-black/50 to-transparent px-6 pb-[max(1.5rem,calc(env(safe-area-inset-bottom)+0.75rem))] pt-10">
+            <button
+              onClick={() => setCameraOpen(false)}
+              className="flex size-14 items-center justify-center rounded-full bg-black/40 text-white"
+              aria-label="Fechar"
+            >
               <X className="size-7" />
             </button>
             <button
               onClick={capture}
               aria-label="Capturar"
-              className="size-18 rounded-full border-4 border-white bg-white/20 active:bg-white/60"
-            />
+              className="flex size-20 items-center justify-center rounded-full border-4 border-white active:scale-95"
+            >
+              <span className="size-16 rounded-full bg-white/90" />
+            </button>
             <button
               onClick={() => setFacing((f) => (f === "user" ? "environment" : "user"))}
-              className="rounded-full p-3 text-white"
+              className="flex size-14 items-center justify-center rounded-full bg-black/40 text-white"
               aria-label="Trocar câmera"
             >
               <SwitchCamera className="size-7" />
