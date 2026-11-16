@@ -19,6 +19,7 @@ Na Vercel → Settings → Environment Variables:
 
 | Variável | Para quê |
 |---|---|
+| `NEXT_PUBLIC_CLINIC_NAME` | Nome da clínica: aparece no topo, no ícone instalado e na imagem de antes/depois enviada ao paciente. |
 | `OPENAI_API_KEY` | Chave da OpenAI (platform.openai.com → API keys). Usa o GPT Image. |
 | `GEMINI_API_KEY` | Chave do Google AI Studio. Precisa de faturamento ativo para os modelos de imagem. |
 | `ACCESS_CODE` | Recomendado. Código que o app pede para gerar (evita que estranhos gastem seus créditos). Digite-o em "Ajustes da IA". |

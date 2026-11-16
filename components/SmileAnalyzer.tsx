@@ -31,6 +31,7 @@ import { labToCss, type RGB } from "@/lib/color";
 import { LensAIError, generateLensAI, type AIQuality, type LensAIResult, type LensStyle } from "@/lib/lens-ai";
 import type { SimImages } from "@/lib/analyze";
 import BeforeAfter from "@/components/BeforeAfter";
+import { CLINIC_NAME } from "@/lib/clinic";
 import { ALL_SHADES_BY_VALUE, BLEACH_SHADES, SHADE_GROUPS, VITA_SHADES, findShade, naturalWhiteningTarget, type Shade } from "@/lib/shades";
 
 type SimKey = "clareamento" | "orto" | "estetico";
@@ -966,7 +967,8 @@ async function shareBeforeAfter(before: string, after: string, label: string, pa
   const W = Math.min(1080, a.naturalWidth);
   const H = Math.round((W * a.naturalHeight) / a.naturalWidth);
   const gap = Math.round(W * 0.02);
-  const bar = Math.round(W * 0.11);
+  const bar = Math.round(W * (CLINIC_NAME ? 0.17 : 0.11));
+  const labelY = CLINIC_NAME ? H + bar * 0.33 : H + bar / 2;
   const c = document.createElement("canvas");
   c.width = W * 2 + gap;
   c.height = H + bar;
@@ -979,9 +981,15 @@ async function shareBeforeAfter(before: string, after: string, label: string, pa
   x.font = `600 ${Math.round(bar * 0.4)}px system-ui, sans-serif`;
   x.textAlign = "center";
   x.textBaseline = "middle";
-  x.fillText("Antes", W / 2, H + bar / 2);
+  x.font = `600 ${Math.round(W * 0.044)}px system-ui, sans-serif`;
+  x.fillText("Antes", W / 2, labelY);
   x.fillStyle = "#0f8275";
-  x.fillText(label, W + gap + W / 2, H + bar / 2);
+  x.fillText(label, W + gap + W / 2, labelY);
+  if (CLINIC_NAME) {
+    x.fillStyle = "#6b7280";
+    x.font = `500 ${Math.round(W * 0.034)}px system-ui, sans-serif`;
+    x.fillText(`${CLINIC_NAME} · simulação ilustrativa`, c.width / 2, H + bar * 0.75);
+  }
 
   const blob = await new Promise<Blob | null>((r) => c.toBlob(r, "image/jpeg", 0.92));
   if (!blob) return;

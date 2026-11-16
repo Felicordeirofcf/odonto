@@ -1,5 +1,6 @@
 import { ScanFace } from "lucide-react";
 import SmileAnalyzer from "@/components/SmileAnalyzer";
+import { CLINIC_NAME } from "@/lib/clinic";
 
 export default function Page() {
   return (
@@ -9,8 +10,10 @@ export default function Page() {
           <ScanFace className="size-6" />
         </div>
         <div>
-          <h1 className="text-xl font-bold leading-tight">Análise de Sorriso</h1>
-          <p className="text-sm text-gray-500">Cor dos dentes, clareamento e lentes · IA</p>
+          <h1 className="text-xl font-bold leading-tight">{CLINIC_NAME || "Análise de Sorriso"}</h1>
+          <p className="text-sm text-gray-500">
+            {CLINIC_NAME ? "Simulação de sorriso com IA" : "Cor dos dentes, clareamento e lentes · IA"}
+          </p>
         </div>
       </header>
       <SmileAnalyzer />
