@@ -17,12 +17,18 @@ Nos modos com IA (Google Gemini), só a parte de baixo do rosto é enviada; o re
 
 Na Vercel → Settings → Environment Variables:
 
-| Variável | Obrigatória | Para quê |
-|---|---|---|
-| `GEMINI_API_KEY` | sim | Chave do Google AI Studio (aistudio.google.com → Get API key). Precisa de faturamento ativo para os modelos de imagem. |
-| `ACCESS_CODE` | recomendado | Código que o app pede para gerar (evita que estranhos gastem seus créditos). Digite-o em "Ajustes da IA". |
-| `GEMINI_IMAGE_SIZE` | não | Resolução gerada: `1K`, `2K` (padrão) ou `4K`. Maior = mais nítido e mais caro. |
-| `GEMINI_IMAGE_MODELS` | não | Modelos em ordem de preferência. Padrão: `gemini-3-pro-image,gemini-3.1-flash-image`. |
+| Variável | Para quê |
+|---|---|
+| `OPENAI_API_KEY` | Chave da OpenAI (platform.openai.com → API keys). Usa o GPT Image. |
+| `GEMINI_API_KEY` | Chave do Google AI Studio. Precisa de faturamento ativo para os modelos de imagem. |
+| `ACCESS_CODE` | Recomendado. Código que o app pede para gerar (evita que estranhos gastem seus créditos). Digite-o em "Ajustes da IA". |
+| `IMAGE_PROVIDERS` | Opcional. Ordem dos provedores. Padrão: `openai,gemini` (usa só os que têm chave; se o primeiro falhar, tenta o próximo). |
+| `OPENAI_IMAGE_QUALITY` | Opcional. `low`, `medium` ou `high` (padrão). Menor = mais barato. |
+| `OPENAI_IMAGE_MODELS` | Opcional. Padrão: `gpt-image-2,gpt-image-1`. |
+| `GEMINI_IMAGE_SIZE` | Opcional. `1K`, `2K` (padrão) ou `4K`. |
+| `GEMINI_IMAGE_MODELS` | Opcional. Padrão: `gemini-3-pro-image,gemini-3.1-flash-image`. |
+
+Basta **uma** das duas chaves (OpenAI ou Gemini).
 
 O texto (prompt) enviado à IA fica em `app/api/lente/route.ts` — dá para ajustar o estilo com o cliente.
 

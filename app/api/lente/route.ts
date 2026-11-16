@@ -5,16 +5,22 @@ export const runtime = "nodejs";
 export const maxDuration = 120;
 
 /**
- * Gera a simulação de lente de contato dental com IA generativa (Google Gemini).
+ * Gera as simulações de sorriso (ortodôntico / estético) com IA generativa.
+ * Provedores: OpenAI (GPT Image) e Google Gemini — usa os que tiverem chave.
  *
  * Variáveis de ambiente:
- *  - GEMINI_API_KEY      (obrigatória) chave do Google AI Studio
- *  - GEMINI_IMAGE_MODELS (opcional) modelos em ordem de preferência, separados por vírgula
- *  - GEMINI_IMAGE_SIZE   (opcional) "1K", "2K" (padrão) ou "4K"
- *  - ACCESS_CODE         (opcional) se definido, o app precisa enviar este código
+ *  - OPENAI_API_KEY        chave da OpenAI (platform.openai.com → API keys)
+ *  - OPENAI_IMAGE_MODELS   (opcional) modelos em ordem de preferência. Padrão: gpt-image-2,gpt-image-1
+ *  - OPENAI_IMAGE_QUALITY  (opcional) low | medium | high (padrão)
+ *  - GEMINI_API_KEY        chave do Google AI Studio
+ *  - GEMINI_IMAGE_MODELS   (opcional) modelos em ordem de preferência
+ *  - GEMINI_IMAGE_SIZE     (opcional) "1K", "2K" (padrão) ou "4K"
+ *  - IMAGE_PROVIDERS       (opcional) ordem dos provedores. Padrão: openai,gemini
+ *  - ACCESS_CODE           (opcional) se definido, o app precisa enviar este código
  */
 
 const DEFAULT_MODELS = ["gemini-3-pro-image", "gemini-3.1-flash-image"];
+const DEFAULT_OPENAI_MODELS = ["gpt-image-2", "gpt-image-1"];
 
 const SHADES: Record<string, string> = {
   BL1: "VITA BL1 — the brightest bleached white, almost pure white with a hint of translucency",
@@ -87,10 +93,143 @@ function json(body: unknown, status = 200) {
   return Response.json(body, { status });
 }
 
+type Input = { mimeType: string; data: string; prompt: string };
+type Generated = { b64: string; mime: string; model: string; info?: string };
+
+const list = (v: string | undefined, def: string[]) =>
+  (v || def.join(","))
+    .split(",")
+    .map((m) => m.trim())
+    .filter(Boolean);
+
+/** Erros em que repetir não adianta (chave, permissão, cota, modelo inexistente). */
+const FATAL = /\b(401|403|404|429)\b|not found|permission|API key|quota|billing|verif/i;
+
+async function viaOpenAI(input: Input, errors: string[]): Promise<Generated | null> {
+  const apiKey = process.env.OPENAI_API_KEY!;
+  const bytes = Buffer.from(input.data, "base64");
+  const ext = input.mimeType.split("/")[1];
+
+  for (const model of list(process.env.OPENAI_IMAGE_MODELS, DEFAULT_OPENAI_MODELS)) {
+    // parâmetros opcionais: se o modelo recusar algum, ele é retirado e tenta-se de novo
+    const extras: Record<string, string> = {
+      quality: (process.env.OPENAI_IMAGE_QUALITY || "high").toLowerCase(),
+      input_fidelity: "high",
+      output_format: "jpeg",
+    };
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const form = new FormData();
+      form.set("model", model);
+      form.set("prompt", input.prompt);
+      form.set("size", "1024x1024");
+      form.set("n", "1");
+      for (const [k, v] of Object.entries(extras)) form.set(k, v);
+      form.set("image", new Blob([bytes], { type: input.mimeType }), `sorriso.${ext}`);
+
+      let status = 0;
+      let text = "";
+      try {
+        const res = await fetch(`${(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "")}/images/edits`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}` },
+          body: form,
+        });
+        status = res.status;
+        text = await res.text();
+        if (res.ok) {
+          const item = (JSON.parse(text) as { data?: { b64_json?: string; url?: string }[] }).data?.[0];
+          if (item?.b64_json)
+            return { b64: item.b64_json, mime: extras.output_format ? "image/jpeg" : "image/png", model };
+          if (item?.url) {
+            const img = await fetch(item.url);
+            if (img.ok)
+              return {
+                b64: Buffer.from(await img.arrayBuffer()).toString("base64"),
+                mime: img.headers.get("content-type") || "image/png",
+                model,
+              };
+          }
+          errors.push(`${model}: resposta sem imagem`);
+          continue;
+        }
+      } catch (e) {
+        errors.push(`${model}: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`);
+        continue;
+      }
+
+      let msg = text.slice(0, 300);
+      let param: string | null = null;
+      try {
+        const err = (JSON.parse(text) as { error?: { message?: string; param?: string } }).error;
+        if (err?.message) msg = err.message.slice(0, 300);
+        param = err?.param ?? null;
+      } catch {}
+      errors.push(`${model}: ${status} ${msg}`);
+
+      // parâmetro opcional não aceito por este modelo → remove e tenta de novo
+      const bad = Object.keys(extras).find((k) => param === k || new RegExp(`\\b${k}\\b`).test(msg));
+      if (status === 400 && bad) {
+        delete extras[bad];
+        continue;
+      }
+      if (status === 400 || FATAL.test(`${status} ${msg}`)) break;
+    }
+  }
+  return null;
+}
+
+async function viaGemini(input: Input, errors: string[]): Promise<Generated | null> {
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+  const wanted = (process.env.GEMINI_IMAGE_SIZE || "2K").toUpperCase();
+
+  for (const model of list(process.env.GEMINI_IMAGE_MODELS, DEFAULT_MODELS)) {
+    // 1ª tentativa em alta resolução; se o modelo não aceitar o tamanho, cai para o padrão.
+    let imageSize: string | undefined = wanted === "1K" ? undefined : wanted;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await ai.models.generateContent({
+          model,
+          contents: [
+            { role: "user", parts: [{ inlineData: { mimeType: input.mimeType, data: input.data } }, { text: input.prompt }] },
+          ],
+          config: {
+            responseModalities: ["IMAGE"],
+            imageConfig: { aspectRatio: "1:1", ...(imageSize ? { imageSize } : {}) },
+          },
+        });
+        const part = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
+        if (part?.inlineData?.data)
+          return { b64: part.inlineData.data, mime: part.inlineData.mimeType || "image/png", model, info: imageSize ?? "1K" };
+        const reason = res.candidates?.[0]?.finishReason ?? res.promptFeedback?.blockReason ?? "sem imagem";
+        errors.push(`${model}: ${reason}`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        errors.push(`${model}${imageSize ? ` (${imageSize})` : ""}: ${msg.slice(0, 200)}`);
+        if (imageSize && /\b400\b|INVALID_ARGUMENT|image_?size/i.test(msg) && !/API key/i.test(msg)) {
+          imageSize = undefined;
+          continue;
+        }
+        if (/\b400\b/.test(msg) || FATAL.test(msg)) break;
+      }
+    }
+  }
+  return null;
+}
+
+const PROVIDERS = {
+  openai: { key: "OPENAI_API_KEY", run: viaOpenAI, name: "OpenAI" },
+  gemini: { key: "GEMINI_API_KEY", run: viaGemini, name: "Google" },
+} as const;
+
 export async function POST(req: Request) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey)
-    return json({ error: "IA generativa não configurada: defina GEMINI_API_KEY no servidor (Vercel → Settings → Environment Variables)." }, 503);
+  const providers = list(process.env.IMAGE_PROVIDERS, ["openai", "gemini"])
+    .map((p) => p.toLowerCase())
+    .filter((p): p is keyof typeof PROVIDERS => p in PROVIDERS && !!process.env[PROVIDERS[p as keyof typeof PROVIDERS].key]);
+  if (!providers.length)
+    return json(
+      { error: "IA generativa não configurada: defina OPENAI_API_KEY ou GEMINI_API_KEY no servidor (Vercel → Settings → Environment Variables) e faça Redeploy." },
+      503,
+    );
 
   const access = process.env.ACCESS_CODE;
   if (access && req.headers.get("x-access-code") !== access)
@@ -111,66 +250,36 @@ export async function POST(req: Request) {
   const [, mimeType, data] = match;
   if (data.length * 0.75 > MAX_BYTES) return json({ error: "Imagem muito grande." }, 413);
 
-  const models = (process.env.GEMINI_IMAGE_MODELS || DEFAULT_MODELS.join(","))
-    .split(",")
-    .map((m) => m.trim())
-    .filter(Boolean);
-
-  const ai = new GoogleGenAI({ apiKey });
-  const prompt = buildPrompt(mode, shade, style);
+  const input: Input = { mimeType, data, prompt: buildPrompt(mode, shade, style) };
   const errors: string[] = [];
-  const wanted = (process.env.GEMINI_IMAGE_SIZE || "2K").toUpperCase();
+  const started = Date.now();
 
-  for (const model of models) {
-    // 1ª tentativa em alta resolução; se o modelo não aceitar o tamanho, cai para o padrão.
-    let imageSize: string | undefined = wanted === "1K" ? undefined : wanted;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const res = await ai.models.generateContent({
-          model,
-          contents: [{ role: "user", parts: [{ inlineData: { mimeType, data } }, { text: prompt }] }],
-          config: {
-            responseModalities: ["IMAGE"],
-            imageConfig: { aspectRatio: "1:1", ...(imageSize ? { imageSize } : {}) },
-          },
-        });
-        const part = res.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
-        if (part?.inlineData?.data) {
-          return json({
-            image: await toJpeg(part.inlineData.data, part.inlineData.mimeType || "image/png"),
-            model,
-            mode,
-            shade,
-            style,
-            size: imageSize ?? "1K",
-          });
-        }
-        const reason = res.candidates?.[0]?.finishReason ?? res.promptFeedback?.blockReason ?? "sem imagem";
-        errors.push(`${model}: ${reason}`);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        errors.push(`${model}${imageSize ? ` (${imageSize})` : ""}: ${msg.slice(0, 200)}`);
-        // tamanho não suportado por este modelo: tenta de novo no tamanho padrão
-        if (imageSize && /\b400\b|INVALID_ARGUMENT|image_?size/i.test(msg) && !/API key/i.test(msg)) {
-          imageSize = undefined;
-          continue;
-        }
-        // modelo inexistente / sem permissão / chave inválida / cota: não adianta repetir
-        if (/\b(400|401|403|404|429)\b|not found|permission|API key|quota/i.test(msg)) break;
-      }
+  for (const p of providers) {
+    const mark = errors.length;
+    const out = await PROVIDERS[p].run(input, errors);
+    for (let i = mark; i < errors.length; i++) errors[i] = `[${p}] ${errors[i]}`;
+    if (out) {
+      console.log(`[lente] ok provedor=${p} modelo=${out.model} modo=${mode} ${Date.now() - started}ms`, errors);
+      return json({ image: await toJpeg(out.b64, out.mime), provider: p, model: out.model, mode, shade, style });
     }
   }
 
   console.error("[lente] falha na geração", errors);
-  const keyProblem = errors.some((e) => /API key|401|403|permission/i.test(e));
-  const quotaProblem = errors.length > 0 && errors.every((e) => /429|quota|RESOURCE_EXHAUSTED/i.test(e));
+  const last = providers[providers.length - 1];
+  const who = providers.map((p) => PROVIDERS[p].name).join(" / ");
+  const mine = errors.filter((e) => e.startsWith(`[${last}]`));
+  const quota = mine.length > 0 && mine.every((e) => /429|quota|RESOURCE_EXHAUSTED|billing/i.test(e));
+  const verify = errors.some((e) => /must be verified|verif/i.test(e));
+  const keyProblem = errors.some((e) => /API key|\b401\b|\b403\b|permission/i.test(e));
   return json(
     {
-      error: quotaProblem
-        ? "Cota da IA esgotada no Google. Ative o faturamento (plano pago) da chave em aistudio.google.com ou aguarde alguns minutos."
-        : keyProblem
-          ? "A chave GEMINI_API_KEY foi recusada pelo Google. Confira a chave e se o faturamento está ativo."
-          : "A IA não conseguiu gerar a lente para esta foto. Tente outra foto, com o sorriso mais aberto e boa luz.",
+      error: verify
+        ? "A OpenAI exige verificar a organização para usar o modelo de imagem: platform.openai.com → Settings → Organization → Verify. Depois aguarde alguns minutos."
+        : quota
+          ? `Sem cota/crédito de IA em ${who}. Confira o saldo e o faturamento da chave.`
+          : keyProblem
+            ? `A chave de IA foi recusada (${who}). Confira a chave e as permissões.`
+            : "A IA não conseguiu gerar a simulação para esta foto. Tente outra foto, com o sorriso mais aberto e boa luz.",
       details: errors,
     },
     502,
