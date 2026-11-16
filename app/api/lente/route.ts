@@ -2,7 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import sharp from "sharp";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 /**
  * Gera as simulações de sorriso (ortodôntico / estético) com IA generativa.
@@ -93,7 +93,7 @@ function json(body: unknown, status = 200) {
   return Response.json(body, { status });
 }
 
-type Input = { mimeType: string; data: string; prompt: string };
+type Input = { mimeType: string; data: string; prompt: string; quality: string };
 type Generated = { b64: string; mime: string; model: string; info?: string };
 
 const list = (v: string | undefined, def: string[]) =>
@@ -113,8 +113,9 @@ async function viaOpenAI(input: Input, errors: string[]): Promise<Generated | nu
   for (const model of list(process.env.OPENAI_IMAGE_MODELS, DEFAULT_OPENAI_MODELS)) {
     // parâmetros opcionais: se o modelo recusar algum, ele é retirado e tenta-se de novo
     const extras: Record<string, string> = {
-      quality: (process.env.OPENAI_IMAGE_QUALITY || "high").toLowerCase(),
-      input_fidelity: "high",
+      quality: input.quality,
+      // o gpt-image-2 já preserva a foto original e recusa este parâmetro
+      ...(model.startsWith("gpt-image-2") ? {} : { input_fidelity: "high" }),
       output_format: "jpeg",
     };
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -235,7 +236,7 @@ export async function POST(req: Request) {
   if (access && req.headers.get("x-access-code") !== access)
     return json({ error: "Código de acesso inválido. Informe o código em “Ajustes da IA”." }, 401);
 
-  let body: { image?: string; shade?: string; style?: string; mode?: string };
+  let body: { image?: string; shade?: string; style?: string; mode?: string; quality?: string };
   try {
     body = await req.json();
   } catch {
@@ -250,7 +251,10 @@ export async function POST(req: Request) {
   const [, mimeType, data] = match;
   if (data.length * 0.75 > MAX_BYTES) return json({ error: "Imagem muito grande." }, 413);
 
-  const input: Input = { mimeType, data, prompt: buildPrompt(mode, shade, style) };
+  const quality = ["low", "medium", "high"].includes(body.quality ?? "")
+    ? body.quality!
+    : (process.env.OPENAI_IMAGE_QUALITY || "high").toLowerCase();
+  const input: Input = { mimeType, data, prompt: buildPrompt(mode, shade, style), quality };
   const errors: string[] = [];
   const started = Date.now();
 

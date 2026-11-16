@@ -28,7 +28,7 @@ import {
   type AnalysisSettings,
 } from "@/lib/analyze";
 import { labToCss, type RGB } from "@/lib/color";
-import { LensAIError, generateLensAI, type LensAIResult, type LensStyle } from "@/lib/lens-ai";
+import { LensAIError, generateLensAI, type AIQuality, type LensAIResult, type LensStyle } from "@/lib/lens-ai";
 import type { SimImages } from "@/lib/analyze";
 import BeforeAfter from "@/components/BeforeAfter";
 import { ALL_SHADES_BY_VALUE, BLEACH_SHADES, SHADE_GROUPS, VITA_SHADES, findShade, naturalWhiteningTarget, type Shade } from "@/lib/shades";
@@ -104,6 +104,9 @@ export default function SmileAnalyzer() {
   const [lensStyle, setLensStyle] = useState<LensStyle>("natural");
   const [aiCache, setAiCache] = useState<Record<string, LensAIResult>>({});
   const [aiBusy, setAiBusy] = useState(false);
+  const [aiQuality, setAiQuality] = useState<AIQuality>("high");
+  const [aiStart, setAiStart] = useState<number | null>(null);
+  const [now, setNow] = useState(0);
   const [aiError, setAiError] = useState<string | null>(null);
   const [consent, setConsent] = useState(false);
   const [faceView, setFaceView] = useState<"rosto" | "sorriso">("rosto");
@@ -294,14 +297,33 @@ export default function SmileAnalyzer() {
         ? "Ortodôntico"
         : `Lentes · ${lensCode}`;
 
+  // cronômetro enquanto a IA gera
+  useEffect(() => {
+    if (!aiStart) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, [aiStart]);
+
+  const expectedSec = aiQuality === "high" ? 100 : 45;
+  const elapsedSec = aiStart ? Math.max(0, Math.round((now - aiStart) / 1000)) : 0;
+  // avança rápido no começo e desacelera, sem nunca "terminar" antes da resposta
+  const progress = aiStart ? Math.min(0.96, 1 - Math.exp(-(elapsedSec / expectedSec) * 1.6)) : 0;
+
   const generateAI = async () => {
     if (!result) return;
     setAiBusy(true);
     setAiError(null);
+    setAiStart(Date.now());
+    // mantém a tela ligada durante a geração (se o navegador permitir)
+    let lock: { release: () => Promise<void> } | null = null;
+    try {
+      lock = await (navigator as Navigator & { wakeLock?: { request: (t: "screen") => Promise<{ release: () => Promise<void> }> } }).wakeLock?.request("screen") ?? null;
+    } catch {}
     try {
       const r = await generateLensAI(
         result.sim,
-        { mode: simTab === "orto" ? "ortho" : "cosmetic", shade: lensCode, style: lensStyle },
+        { mode: simTab === "orto" ? "ortho" : "cosmetic", shade: lensCode, style: lensStyle, quality: aiQuality },
         accessCode,
       );
       setAiCache((c) => ({ ...c, [aiKey]: r }));
@@ -311,6 +333,8 @@ export default function SmileAnalyzer() {
       console.error(e);
     } finally {
       setAiBusy(false);
+      setAiStart(null);
+      lock?.release().catch(() => {});
     }
   };
 
@@ -567,7 +591,23 @@ export default function SmileAnalyzer() {
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={sims.atual.view} alt="Foto atual" className="aspect-square w-full object-cover opacity-60" />
               <div className="absolute inset-0 flex items-center justify-center bg-white/40 p-4 text-center text-sm font-medium text-violet-900">
-                {aiBusy ? "Gerando simulação… pode levar até 40 s" : "Toque em “Gerar simulação” abaixo"}
+                {aiBusy ? (
+                  <div className="w-full max-w-xs">
+                    <div className="text-base font-semibold">Gerando simulação…</div>
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-violet-100">
+                      <div
+                        className="h-full rounded-full bg-violet-600 transition-[width] duration-500"
+                        style={{ width: `${Math.round(progress * 100)}%` }}
+                      />
+                    </div>
+                    <div className="mt-2 text-xs font-normal">
+                      {elapsedSec} s · costuma levar {aiQuality === "high" ? "1 a 2 min" : "30 a 60 s"}. Mantenha o app
+                      aberto.
+                    </div>
+                  </div>
+                ) : (
+                  "Toque em “Gerar simulação” abaixo"
+                )}
               </div>
             </div>
           )}
@@ -578,6 +618,26 @@ export default function SmileAnalyzer() {
                 A IA redesenha só os dentes. Apenas a parte de baixo do rosto é enviada; o restante da foto continua
                 igual.
               </p>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
+                {(
+                  [
+                    ["high", "Máxima qualidade", "~1,5 min"],
+                    ["medium", "Rápida", "~40 s"],
+                  ] as const
+                ).map(([q, label, hint]) => (
+                  <button
+                    key={q}
+                    onClick={() => setAiQuality(q)}
+                    disabled={aiBusy}
+                    className={`rounded-lg border px-3 py-2 text-left ${
+                      aiQuality === q ? "border-violet-500 bg-white text-violet-800" : "border-violet-200 text-violet-900/70"
+                    }`}
+                  >
+                    <span className="font-semibold">{label}</span>
+                    <span className="block text-xs opacity-70">{hint}</span>
+                  </button>
+                ))}
+              </div>
               {!after && (
                 <label className="mt-2 flex items-start gap-2 text-sm text-violet-900">
                   <input
@@ -595,7 +655,7 @@ export default function SmileAnalyzer() {
                 className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-3 font-semibold text-white disabled:opacity-50"
               >
                 {aiBusy ? <LoaderCircle className="size-5 animate-spin" /> : <Wand2 className="size-5" />}
-                {aiBusy ? "Gerando…" : after ? "Gerar outra versão" : "Gerar simulação"}
+                {aiBusy ? `Gerando… ${elapsedSec} s` : after ? "Gerar outra versão" : "Gerar simulação"}
               </button>
               {aiError && <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{aiError}</p>}
             </div>

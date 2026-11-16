@@ -117,10 +117,11 @@ function registration(sim: SimulationData, gen: HTMLImageElement) {
 }
 
 export type AIMode = "ortho" | "cosmetic";
+export type AIQuality = "medium" | "high";
 
 export async function generateLensAI(
   sim: SimulationData,
-  opts: { mode: AIMode; shade: string; style: LensStyle },
+  opts: { mode: AIMode; shade: string; style: LensStyle; quality: AIQuality },
   accessCode: string,
 ): Promise<LensAIResult> {
   const sq = viewRect(sim);
@@ -131,15 +132,24 @@ export async function generateLensAI(
   const image = send.toDataURL("image/jpeg", 0.93);
 
   let res: Response;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 290_000);
   try {
     res = await fetch("/api/lente", {
+      signal: ctrl.signal,
       method: "POST",
       headers: { "Content-Type": "application/json", ...(accessCode ? { "x-access-code": accessCode } : {}) },
       body: JSON.stringify({ image, ...opts }),
     });
-  } catch {
-    throw new LensAIError("Sem conexão com o servidor. Verifique a internet.");
+  } catch (e) {
+    clearTimeout(timer);
+    throw new LensAIError(
+      e instanceof DOMException && e.name === "AbortError"
+        ? "A IA demorou demais para responder. Tente de novo (ou use a opção Rápida)."
+        : "A conexão caiu durante a geração. Mantenha o app aberto e a tela ligada, e tente de novo.",
+    );
   }
+  clearTimeout(timer);
   const data = (await res.json().catch(() => ({}))) as { image?: string; error?: string };
   if (!res.ok || !data.image) throw new LensAIError(data.error || "A IA não conseguiu gerar a imagem. Tente de novo.");
 
