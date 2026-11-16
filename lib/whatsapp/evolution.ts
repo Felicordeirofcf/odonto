@@ -52,6 +52,18 @@ export async function sendText(to: string, text: string, delayMs = 1200) {
   return call(`/message/sendText/${instance}`, { number: to, text, delay: delayMs });
 }
 
+/** Estado da conexão do número: "open" = conectado. */
+export async function connectionState(): Promise<string> {
+  const { url, apikey, instance } = cfg();
+  const res = await fetch(`${url}/instance/connectionState/${instance}`, {
+    headers: { apikey },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`Evolution respondeu ${res.status}`);
+  const j = (await res.json()) as { instance?: { state?: string } };
+  return j.instance?.state ?? "desconhecido";
+}
+
 /** Últimas mensagens da conversa, da mais nova para a mais antiga. */
 export async function fetchHistory(remoteJid: string, limit = 30): Promise<EvoMessage[]> {
   const { instance } = cfg();

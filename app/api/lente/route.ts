@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import sharp from "sharp";
+import { isAdmin } from "@/lib/admin";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -255,7 +256,7 @@ export async function POST(req: Request) {
     );
 
   const access = process.env.ACCESS_CODE;
-  if (access && req.headers.get("x-access-code") !== access)
+  if (access && req.headers.get("x-access-code") !== access && !(await isAdmin()))
     return json({ error: "Código de acesso inválido. Informe o código em “Ajustes da IA”." }, 401);
 
   let body: { image?: string; shade?: string; style?: string; mode?: string; quality?: string };

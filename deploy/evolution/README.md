@@ -48,7 +48,7 @@ curl -X POST "https://SEU-SUBDOMINIO/webhook/set/clinica" -H "apikey: SUA_AUTHEN
 | `WHATSAPP_AI_MODEL` | opcional. Padrão `claude-opus-5-5`; `claude-haiku-5-5` custa bem menos |
 | `WHATSAPP_AI_ENABLED` | opcional. `false` desliga a IA na hora |
 
-Depois: **Redeploy**. Para conferir: abra `https://odonto-zeta-pink.vercel.app/api/whatsapp` (mostra o que está configurado, sem mostrar segredos).
+Depois: **Redeploy**. Para conferir, entre em `https://odonto-zeta-pink.vercel.app/admin` (senha: variável `ADMIN_PASSWORD`): lá aparece o que está configurado, um botão para testar a conexão do WhatsApp e um simulador para conversar com a IA como se fosse um paciente.
 
 ## 6. Informações da clínica
 A IA só responde com o que está em `config/atendimento.md`. Preencha esse arquivo antes de ligar.

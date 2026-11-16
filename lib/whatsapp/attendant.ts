@@ -33,7 +33,7 @@ export type WebhookBody = {
   data?: EvoMessage;
 };
 
-type Decision = {
+export type Decision = {
   resposta: string;
   encaminhar_para_equipe: boolean;
   motivo: string;
@@ -136,25 +136,15 @@ export async function handleIncoming(body: WebhookBody): Promise<string> {
     .filter((m) => now - ts(m) < HISTORY_HOURS * 3600)
     .reverse();
   if (!window.some((m) => m.key.id === msg.key.id)) window.push(msg);
-  const messages: Anthropic.Beta.BetaMessageParam[] = [];
-  for (const m of window) {
-    const text = textOf(m).replaceAll(BOT_MARK, "").trim();
-    if (!text) continue;
-    const role = m.key.fromMe ? "assistant" : "user";
-    if (!messages.length && role === "assistant") continue; // a conversa precisa começar pelo paciente
-    messages.push({ role, content: text });
-  }
-  if (!messages.length || messages[messages.length - 1].role !== "user") return "ignorado: nada novo para responder";
-
   const name = msg.pushName && msg.pushName !== "Você" ? msg.pushName : "";
-  const nowBr = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "full", timeStyle: "short" });
-  messages.push({
-    role: "user",
-    content: `[contexto do sistema, não escrito pelo paciente: agora é ${nowBr}${name ? `; nome no WhatsApp: ${name}` : ""}]`,
-  });
+  const messages = buildMessages(
+    window.map((m) => ({ role: m.key.fromMe ? "assistant" : "user", text: textOf(m).replaceAll(BOT_MARK, "") })),
+    name,
+  );
+  if (!messages) return "ignorado: nada novo para responder";
 
   // 5) decisão da IA
-  const decision = await decide(messages);
+  const decision = (await decide(messages))?.decision ?? null;
   if (!decision) {
     await sendText(jid, "Recebi sua mensagem! Alguém da nossa equipe já vai te responder." + HANDOFF_MARK);
     await notifyStaff(jid, name, "A IA não conseguiu responder esta conversa.", "");
@@ -167,7 +157,33 @@ export async function handleIncoming(body: WebhookBody): Promise<string> {
   return decision.encaminhar_para_equipe ? "respondido e encaminhado" : "respondido";
 }
 
-async function decide(messages: Anthropic.Beta.BetaMessageParam[]): Promise<Decision | null> {
+export type Turn = { role: "user" | "assistant"; text: string };
+
+/** Monta a conversa para a IA. Retorna null se não há mensagem nova do paciente. */
+export function buildMessages(turns: Turn[], name = ""): Anthropic.Beta.BetaMessageParam[] | null {
+  const messages: Anthropic.Beta.BetaMessageParam[] = [];
+  for (const t of turns) {
+    const text = t.text.trim();
+    if (!text) continue;
+    if (!messages.length && t.role === "assistant") continue; // a conversa precisa começar pelo paciente
+    messages.push({ role: t.role, content: text });
+  }
+  if (!messages.length || messages[messages.length - 1].role !== "user") return null;
+  const nowBr = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "full", timeStyle: "short" });
+  messages.push({
+    role: "user",
+    content: `[contexto do sistema, não escrito pelo paciente: agora é ${nowBr}${name ? `; nome no WhatsApp: ${name}` : ""}]`,
+  });
+  return messages;
+}
+
+export type DecideResult = {
+  decision: Decision;
+  model: string;
+  usage: { input: number; cached: number; output: number };
+};
+
+export async function decide(messages: Anthropic.Beta.BetaMessageParam[]): Promise<DecideResult | null> {
   const model = process.env.WHATSAPP_AI_MODEL || "claude-opus-5-5";
   const effort = (process.env.WHATSAPP_AI_EFFORT || "low") as "low" | "medium" | "high";
   const withFallback = /opus|sonnet|fable/.test(model);
@@ -192,7 +208,11 @@ async function decide(messages: Anthropic.Beta.BetaMessageParam[]): Promise<Deci
     const text = res.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
     const parsed = JSON.parse(text) as Decision;
     if (!parsed.resposta?.trim()) return null;
-    return parsed;
+    return {
+      decision: parsed,
+      model: res.model,
+      usage: { input: u.input_tokens, cached: u.cache_read_input_tokens ?? 0, output: u.output_tokens },
+    };
   } catch (e) {
     if (e instanceof Anthropic.AuthenticationError) console.error("[atendimento] ANTHROPIC_API_KEY inválida");
     else if (e instanceof Anthropic.RateLimitError) console.error("[atendimento] limite de uso da API do Claude");

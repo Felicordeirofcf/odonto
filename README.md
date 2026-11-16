@@ -33,6 +33,10 @@ Basta **uma** das duas chaves (OpenAI ou Gemini).
 
 O texto (prompt) enviado à IA fica em `app/api/lente/route.ts` — dá para ajustar o estilo com o cliente.
 
+## Área administrativa
+
+`/admin`, protegida pela senha da variável `ADMIN_PASSWORD`. Mostra o que está configurado, testa a conexão do WhatsApp e tem um simulador para conversar com a IA de atendimento sem enviar nada. Logado como admin, a simulação de lente não pede o código de acesso.
+
 ## Rodar localmente
 
 ```bash
